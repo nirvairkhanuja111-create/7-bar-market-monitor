@@ -1,0 +1,11 @@
+{
+  "name": "7-bar-market-monitor",
+  "version": "1.0.0",
+  "description": "Indian Market Dashboard - 7 Bar Market Monitor",
+  "scripts": {
+    "dev": "node server.js",
+    "start": "node server.js"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}

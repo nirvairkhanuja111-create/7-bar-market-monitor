@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__Claude_Preview__preview_start",
+      "Bash(npx --version)",
+      "Read(//c/Program Files/nodejs//**)",
+      "Read(//c/Program Files \\(x86\\)/**)",
+      "Bash(where.exe node:*)",
+      "Bash(cmd.exe /c \"where node\")",
+      "Bash(export PATH=\"/c/Program Files/nodejs:$PATH\")",
+      "WebSearch"
+    ]
+  }
+}

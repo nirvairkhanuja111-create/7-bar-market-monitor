@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>7 Bar Market Monitor</title>
+    <link rel="stylesheet" href="styles.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+</head>
+<body>
+    <!-- HEADER -->
+    <header class="dashboard-header">
+        <div class="header-left">
+            <div class="logo-area">
+                <div class="logo-icon">
+                    <svg viewBox="0 0 40 40" width="40" height="40">
+                        <rect x="4" y="22" width="4" height="14" rx="1" fill="#00e676"/>
+                        <rect x="10" y="16" width="4" height="20" rx="1" fill="#00e676"/>
+                        <rect x="16" y="10" width="4" height="26" rx="1" fill="#00e676"/>
+                        <rect x="22" y="6" width="4" height="30" rx="1" fill="#00e676"/>
+                        <rect x="28" y="2" width="4" height="34" rx="1" fill="#00e676"/>
+                        <rect x="34" y="8" width="4" height="28" rx="1" fill="#ff5252"/>
+                    </svg>
+                </div>
+                <div>
+                    <h1 class="logo-title">7 BAR MARKET MONITOR</h1>
+                    <p class="logo-subtitle">Indian Market Intelligence Dashboard</p>
+                </div>
+            </div>
+        </div>
+        <div class="header-center">
+            <div class="market-status" id="marketStatus">
+                <span class="status-dot"></span>
+                <span class="status-text">MARKET CLOSED</span>
+            </div>
+            <div class="header-time" id="headerTime">--:--:--</div>
+            <!-- Kite Connect Login -->
+            <div class="kite-status-bar" id="kiteStatusBar">
+                <a href="/auth/kite" class="kite-login-btn" id="kiteLoginBtn" title="Login to Zerodha Kite">
+                    <i class="fas fa-plug"></i>
+                    <span id="kiteStatusText">Connect Zerodha</span>
+                </a>
+            </div>
+        </div>
+        <div class="header-right">
+            <div class="quote-box" id="quoteBox">
+                <i class="fas fa-quote-left quote-icon"></i>
+                <p class="quote-text" id="quoteText">Loading wisdom...</p>
+                <p class="quote-author" id="quoteAuthor">—</p>
+            </div>
+        </div>
+    </header>
+
+    <!-- TICKER TAPE (TradingView) -->
+    <div class="ticker-tape-wrapper">
+        <div id="tradingview-ticker"></div>
+    </div>
+
+    <!-- KPI ROW: TradingView Tickers + Custom Cards -->
+    <section class="kpi-section">
+        <!-- TradingView Tickers strip for indices -->
+        <div class="kpi-tickers-strip" id="tv-kpi-tickers"></div>
+
+        <!-- Custom: Advance/Decline -->
+        <div class="kpi-card adv-dec-card">
+            <div class="kpi-label">NIFTY 500 ADV / DEC <span class="source-badge" id="advDecSource"></span></div>
+            <div class="adv-dec-display">
+                <span class="adv-count" id="advCount">--</span>
+                <div class="adv-dec-bar">
+                    <div class="adv-bar" id="advBar" style="width:50%"></div>
+                    <div class="dec-bar" id="decBar" style="width:50%"></div>
+                </div>
+                <span class="dec-count" id="decCount">--</span>
+            </div>
+            <div class="adv-dec-ratio" id="advDecRatio">Ratio: --</div>
+        </div>
+
+        <!-- Custom: Sentiment / Breakout Indicator -->
+        <div class="kpi-card sentiment-card" id="sentimentCard">
+            <div class="kpi-label">ARE BREAKOUTS LIKELY TO WORK TODAY? <span class="source-badge" id="sentimentSource"></span></div>
+            <div class="sentiment-indicator" id="sentimentIndicator">
+                <div class="sentiment-icon" id="sentimentIcon">
+                    <i class="fas fa-signal"></i>
+                </div>
+                <div class="sentiment-text" id="sentimentText">ANALYZING...</div>
+            </div>
+            <div class="sentiment-detail" id="sentimentDetail">Nifty vs 21 EMA: Loading...</div>
+        </div>
+    </section>
+
+    <!-- ROW 2: Main Chart + Global Indices Sidebar -->
+    <section class="chart-row">
+        <div class="chart-main">
+            <div class="section-label"><i class="fas fa-chart-line"></i> CHARTS</div>
+            <div class="chart-container" id="tv-main-chart"></div>
+        </div>
+        <div class="chart-sidebar">
+            <div class="sidebar-widget-box">
+                <div class="section-label"><i class="fas fa-globe"></i> GLOBAL INDICES</div>
+                <div class="sidebar-widget-container" id="tv-global-indices"></div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ROW 3: 7 Bar Stocks | Gainers | Losers -->
+    <section class="three-col-section">
+        <div class="col-card">
+            <div class="col-header">
+                <div class="col-title"><i class="fas fa-crown"></i> 7 BAR TOP STOCKS <span class="source-badge" id="sevenBarSource"></span></div>
+                <span class="col-badge">0-5% from ATH</span>
+            </div>
+            <div class="col-description">Stocks within 0-5% of their All-Time High</div>
+            <div class="stock-list" id="sevenBarList">
+                <div class="loading-placeholder"><div class="spinner"></div><span>Loading...</span></div>
+            </div>
+        </div>
+        <div class="col-card">
+            <div class="col-header">
+                <div class="col-title gainers-title"><i class="fas fa-arrow-trend-up"></i> TOP 10 GAINERS <span class="source-badge" id="gainersSource"></span></div>
+                <span class="col-badge badge-green">NIFTY 500</span>
+            </div>
+            <div class="col-description">Biggest gainers of the day</div>
+            <div class="stock-list" id="gainersList">
+                <div class="loading-placeholder"><div class="spinner"></div><span>Loading...</span></div>
+            </div>
+        </div>
+        <div class="col-card">
+            <div class="col-header">
+                <div class="col-title losers-title"><i class="fas fa-arrow-trend-down"></i> TOP 10 LOSERS <span class="source-badge" id="losersSource"></span></div>
+                <span class="col-badge badge-red">NIFTY 500</span>
+            </div>
+            <div class="col-description">Biggest losers of the day</div>
+            <div class="stock-list" id="losersList">
+                <div class="loading-placeholder"><div class="spinner"></div><span>Loading...</span></div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ROW 4: Watchlist (Commodities / ETFs) -->
+    <section class="watchlist-section">
+        <div class="section-header">
+            <h2><i class="fas fa-list-check"></i> WATCHLIST</h2>
+            <div class="watchlist-tabs">
+                <button class="wl-tab active" data-tab="commodities"><i class="fas fa-gem"></i> Commodities</button>
+                <button class="wl-tab" data-tab="etfs"><i class="fas fa-layer-group"></i> ETFs</button>
+            </div>
+        </div>
+        <div class="watchlist-content">
+            <div class="wl-panel active" id="commodities-panel">
+                <div id="tv-commodities-widget"></div>
+            </div>
+            <div class="wl-panel" id="etfs-panel">
+                <div id="tv-etfs-widget"></div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ROW 5: News | Heatmap | Trump News -->
+    <section class="bottom-section">
+        <!-- Live Market News -->
+        <div class="bottom-card news-card">
+            <div class="card-header">
+                <h3><i class="fas fa-newspaper"></i> TOP MARKET NEWS</h3>
+                <span class="live-badge">LIVE</span>
+            </div>
+            <div class="news-list" id="marketNewsList">
+                <div class="loading-placeholder"><div class="spinner"></div><span>Fetching live news...</span></div>
+            </div>
+        </div>
+
+        <!-- Sector Heatmap -->
+        <div class="bottom-card heatmap-card">
+            <div class="card-header">
+                <h3><i class="fas fa-th"></i> SECTOR HEATMAP</h3>
+            </div>
+            <div class="heatmap-container" id="sectorHeatmap">
+                <div class="custom-heatmap" id="customHeatmap"></div>
+            </div>
+        </div>
+
+        <!-- Trump News -->
+        <div class="bottom-card trump-card">
+            <div class="card-header">
+                <h3><i class="fas fa-landmark"></i> TRUMP & TRADE WAR</h3>
+                <span class="live-badge">LIVE</span>
+            </div>
+            <div class="news-list" id="trumpNewsList">
+                <div class="loading-placeholder"><div class="spinner"></div><span>Fetching live news...</span></div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ROW 6: Economic Calendar + Global Heatmap -->
+    <section class="calendar-section">
+        <div class="calendar-card">
+            <div class="section-label"><i class="fas fa-calendar-days"></i> ECONOMIC CALENDAR</div>
+            <div class="calendar-container" id="tv-eco-calendar"></div>
+        </div>
+        <div class="heatmap-global-card">
+            <div class="section-label"><i class="fas fa-globe"></i> GLOBAL STOCK HEATMAP</div>
+            <div class="global-heatmap-container" id="tv-global-heatmap"></div>
+        </div>
+    </section>
+
+    <!-- FOOTER -->
+    <footer class="dashboard-footer">
+        <div class="footer-left">
+            <span>7 Bar Market Monitor v2.1</span>
+            <span class="footer-sep">|</span>
+            <span>Live data powered by TradingView</span>
+        </div>
+        <div class="footer-right">
+            <span>Last updated: <span id="lastUpdated">--</span></span>
+        </div>
+    </footer>
+
+    <script src="app.js"></script>
+</body>
+</html>

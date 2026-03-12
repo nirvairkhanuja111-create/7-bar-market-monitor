@@ -1,0 +1,19 @@
+{
+    "kite": {
+        "enabled": true,
+        "apiKey": "ub3scozivbsq3b5s",
+        "apiSecret": "ygzacdwmtz96pu8gayes94g6810k1143",
+        "redirectUrl": "http://localhost:3000/auth/kite/callback",
+        "tokenFile": ".kite-token.json"
+    },
+    "nse": {
+        "cacheTTLMarketHours": 30000,
+        "cacheTTLOffHours": 300000,
+        "cookieTTL": 80000,
+        "maxRetries": 2
+    },
+    "refresh": {
+        "marketDataInterval": 60000,
+        "newsInterval": 300000
+    }
+}
