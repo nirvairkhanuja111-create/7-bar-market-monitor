@@ -675,6 +675,27 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
+    // Kite quote — get LTP for multiple symbols
+    if (pathname === '/api/kite/quote') {
+        if (!kiteClient || !kiteClient.isAuthenticated()) {
+            sendJSON(res, 200, { error: 'Not authenticated', quotes: [] });
+            return;
+        }
+        const symbolsParam = parsedUrl.searchParams.get('symbols');
+        if (!symbolsParam) {
+            sendJSON(res, 200, { error: 'No symbols provided', quotes: [] });
+            return;
+        }
+        try {
+            const symbols = symbolsParam.split(',').map(s => `NSE:${s.trim()}`);
+            const quotes = await kiteClient.getLTP(symbols);
+            sendJSON(res, 200, { source: 'kite', quotes: quotes || [] });
+        } catch (e) {
+            sendJSON(res, 200, { error: e.message, quotes: [] });
+        }
+        return;
+    }
+
     // Kite logout (clear token)
     if (pathname === '/api/kite/logout') {
         if (kiteClient) {

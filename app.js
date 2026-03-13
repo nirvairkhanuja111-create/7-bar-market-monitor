@@ -150,6 +150,7 @@ document.addEventListener("DOMContentLoaded", () => {
     initMarketStatus();
     initAllTradingViewWidgets();
     initWatchlistTabs();
+    initSidebarTabs();
 
     // Show shimmer loading in stock lists
     showShimmerLoading();
@@ -439,20 +440,42 @@ function updateMarketStatus() {
     else { statusEl.classList.remove("open"); textEl.textContent = day >= 1 && day <= 5 && timeNum >= 900 && timeNum < 915 ? "PRE-MARKET" : "MARKET CLOSED"; }
 }
 
+// ===== KITE TICKER (marquee) =====
+async function initKiteTicker() {
+    const container = document.getElementById('kite-ticker');
+    if (!container) return;
+
+    const symbols = ['RELIANCE', 'TCS', 'INFY', 'HDFC', 'WIPRO', 'LT', 'ASIANPAINT', 'MARUTI', 'HCLTECH', 'BAJAJFINSV'];
+
+    try {
+        const response = await fetch(`/api/kite/quote?symbols=${symbols.join(',')}`);
+        if (!response.ok) throw new Error('Failed to fetch Kite quotes');
+        const data = await response.json();
+
+        let html = '<div class="kite-ticker-strip">';
+        (data.quotes || []).forEach(quote => {
+            const change = quote.change || 0;
+            const changeClass = change >= 0 ? 'positive' : 'negative';
+            html += `
+                <div class="kite-ticker-item">
+                    <span class="kite-ticker-symbol">${quote.symbol}</span>
+                    <span class="kite-ticker-price">₹${quote.ltp || 0}</span>
+                    <span class="kite-ticker-change ${changeClass}">${change >= 0 ? '+' : ''}${change.toFixed(2)}%</span>
+                </div>
+            `;
+        });
+        html += '</div>';
+        container.innerHTML = html;
+    } catch (e) {
+        console.warn('Kite ticker failed:', e.message);
+        container.innerHTML = '<div class="ticker-placeholder">Loading Kite ticker...</div>';
+    }
+}
+
 // ===== ALL TRADINGVIEW WIDGETS =====
 function initAllTradingViewWidgets() {
-    // 1. TICKER TAPE
-    injectTVWidget("tradingview-ticker", "embed-widget-ticker-tape", {
-        symbols: [
-            { proName: "BSE:SENSEX", title: "SENSEX" }, { proName: "NSE:NIFTY", title: "NIFTY 50" },
-            { proName: "NSE:BANKNIFTY", title: "BANK NIFTY" }, { proName: "NSE:CNXSMALLCAP", title: "SMALLCAP" },
-            { proName: "NSE:CNXIT", title: "NIFTY IT" }, { proName: "FX_IDC:USDINR", title: "USD/INR" },
-            { proName: "TVC:GOLD", title: "GOLD" }, { proName: "NYMEX:CL1!", title: "CRUDE OIL" },
-            { proName: "CRYPTOCAP:BTC", title: "BITCOIN" }, { proName: "TVC:DXY", title: "DXY" },
-            { proName: "TVC:US10Y", title: "US 10Y" }, { proName: "SP:SPX", title: "S&P 500" },
-        ],
-        showSymbolLogo: true, isTransparent: true, displayMode: "adaptive", colorTheme: "dark", locale: "en",
-    });
+    // 1. KITE TICKER (replaces TradingView ticker tape)
+    initKiteTicker();
 
     // 2. KPI TICKERS
     injectTVWidget("tv-kpi-tickers", "embed-widget-tickers", {
@@ -509,24 +532,6 @@ function initAllTradingViewWidgets() {
         ], originalTitle: "Commodities" }],
     });
 
-    // 6. ETFs WATCHLIST
-    injectTVWidget("tv-etfs-widget", "embed-widget-market-overview", {
-        colorTheme: "dark", dateRange: "1D", showChart: true, locale: "en", width: "100%", height: "100%",
-        largeChartUrl: "", isTransparent: true, showSymbolLogo: true, showFloatingTooltip: true,
-        plotLineColorGrowing: "rgba(0, 230, 118, 1)", plotLineColorFalling: "rgba(255, 82, 82, 1)",
-        gridLineColor: "rgba(42, 46, 57, 0)", scaleFontColor: "rgba(209, 212, 220, 1)",
-        belowLineFillColorGrowing: "rgba(0, 230, 118, 0.05)", belowLineFillColorFalling: "rgba(255, 82, 82, 0.05)",
-        belowLineFillColorGrowingBottom: "rgba(0, 230, 118, 0)", belowLineFillColorFallingBottom: "rgba(255, 82, 82, 0)",
-        symbolActiveColor: "rgba(0, 230, 118, 0.12)",
-        tabs: [{ title: "India ETFs", symbols: [
-            { s: "NSE:NIFTYBEES", d: "Nifty BeES" }, { s: "NSE:BANKBEES", d: "Bank BeES" },
-            { s: "NSE:GOLDBEES", d: "Gold BeES" }, { s: "NSE:ITBEES", d: "IT BeES" },
-            { s: "NSE:JUNIORBEES", d: "Junior BeES" }, { s: "NSE:CPSEETF", d: "CPSE ETF" },
-            { s: "NSE:SILVERBEES", d: "Silver BeES" }, { s: "NSE:PHARMABEES", d: "Pharma BeES" },
-            { s: "AMEX:INDA", d: "iShares MSCI India" }, { s: "AMEX:EPI", d: "WisdomTree India" },
-            { s: "AMEX:SPY", d: "S&P 500 ETF" }, { s: "AMEX:QQQ", d: "Nasdaq 100 ETF" },
-        ], originalTitle: "India ETFs" }],
-    });
 
     // 7. ECONOMIC CALENDAR
     injectTVWidget("tv-eco-calendar", "embed-widget-events", {
@@ -561,15 +566,20 @@ function injectTVWidget(containerId, widgetName, config) {
     container.innerHTML = ""; container.appendChild(wrapper);
 }
 
-// ===== WATCHLIST TABS =====
+// ===== WATCHLIST TABS (removed - watchlist section deleted) =====
 function initWatchlistTabs() {
-    const tabs = document.querySelectorAll(".wl-tab");
+    // Removed as watchlist section no longer exists
+}
+
+// ===== SIDEBAR WATCHLIST TABS =====
+function initSidebarTabs() {
+    const tabs = document.querySelectorAll(".sidebar-tab");
     tabs.forEach(tab => {
         tab.addEventListener("click", () => {
             tabs.forEach(t => t.classList.remove("active"));
             tab.classList.add("active");
             const target = tab.getAttribute("data-tab");
-            document.querySelectorAll(".wl-panel").forEach(p => p.classList.remove("active"));
+            document.querySelectorAll(".sidebar-panel").forEach(p => p.classList.remove("active"));
             document.getElementById(`${target}-panel`).classList.add("active");
         });
     });

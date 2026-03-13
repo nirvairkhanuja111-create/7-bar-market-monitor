@@ -972,6 +972,166 @@ body {
     transform: none;
 }
 
+/* ===== KITE TICKER (marquee) ===== */
+.kite-ticker-container {
+    background: linear-gradient(90deg, rgba(0, 0, 0, 0.3), transparent 20%, transparent 80%, rgba(0, 0, 0, 0.3));
+    border-bottom: 1px solid var(--border);
+    padding: 0;
+    overflow: hidden;
+}
+
+.kite-ticker-strip {
+    display: flex;
+    gap: 24px;
+    padding: 10px 20px;
+    animation: scroll-ticker 30s linear infinite;
+}
+
+.kite-ticker-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    white-space: nowrap;
+    padding: 0 16px;
+    border-right: 1px solid var(--border);
+}
+
+.kite-ticker-item:last-child { border-right: none; }
+
+.kite-ticker-symbol {
+    font-weight: 700;
+    font-size: 11px;
+    color: var(--text-primary);
+    letter-spacing: 1px;
+}
+
+.kite-ticker-price {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.kite-ticker-change {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.kite-ticker-change.positive {
+    color: var(--green);
+}
+
+.kite-ticker-change.negative {
+    color: var(--red);
+}
+
+@keyframes scroll-ticker {
+    0% { transform: translateX(0); }
+    100% { transform: translateX(-50%); }
+}
+
+.ticker-placeholder {
+    padding: 12px 20px;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+/* ===== SIDEBAR WATCHLIST TABS ===== */
+.watchlist-sidebar-tabs {
+    display: flex;
+    gap: 4px;
+    padding: 8px 12px;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border);
+}
+
+.sidebar-tab {
+    flex: 1;
+    padding: 6px 10px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+    border-radius: 6px;
+    transition: var(--transition);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    text-transform: uppercase;
+}
+
+.sidebar-tab:hover {
+    background: var(--bg-card);
+    color: var(--text-primary);
+}
+
+.sidebar-tab.active {
+    background: var(--blue-bg);
+    color: var(--blue);
+    border-color: var(--blue);
+}
+
+.sidebar-tab i {
+    font-size: 9px;
+}
+
+.sidebar-panel {
+    display: none;
+    height: 100%;
+    overflow-y: auto;
+}
+
+.sidebar-panel.active {
+    display: block;
+}
+
+/* ===== KITE WATCHLIST (custom list) ===== */
+.kite-watchlist {
+    padding: 0;
+}
+
+.kite-watchlist-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+    font-size: 11px;
+    transition: background 0.2s;
+}
+
+.kite-watchlist-item:hover {
+    background: var(--bg-card-hover);
+}
+
+.kite-wl-symbol {
+    font-weight: 700;
+    color: var(--text-primary);
+    flex: 0 0 60px;
+}
+
+.kite-wl-price {
+    font-family: var(--font-mono);
+    color: var(--text-secondary);
+    flex: 0 0 70px;
+    text-align: right;
+}
+
+.kite-wl-change {
+    font-family: var(--font-mono);
+    font-weight: 600;
+    flex: 0 0 50px;
+    text-align: right;
+}
+
+.kite-wl-change.positive { color: var(--green); }
+.kite-wl-change.negative { color: var(--red); }
+
 /* ===== RESPONSIVE ===== */
 @media (max-width: 1400px) {
     .kpi-section { grid-template-columns: 1fr; }

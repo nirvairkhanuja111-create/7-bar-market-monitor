@@ -52,9 +52,9 @@
         </div>
     </header>
 
-    <!-- TICKER TAPE (TradingView) -->
+    <!-- TICKER TAPE (Kite-powered Indian stocks) -->
     <div class="ticker-tape-wrapper">
-        <div id="tradingview-ticker"></div>
+        <div id="kite-ticker" class="kite-ticker-container"></div>
     </div>
 
     <!-- KPI ROW: TradingView Tickers + Custom Cards -->
@@ -89,7 +89,7 @@
         </div>
     </section>
 
-    <!-- ROW 2: Main Chart + Global Indices Sidebar -->
+    <!-- ROW 2: Main Chart + Watchlists Sidebar -->
     <section class="chart-row">
         <div class="chart-main">
             <div class="section-label"><i class="fas fa-chart-line"></i> CHARTS</div>
@@ -97,8 +97,23 @@
         </div>
         <div class="chart-sidebar">
             <div class="sidebar-widget-box">
-                <div class="section-label"><i class="fas fa-globe"></i> GLOBAL INDICES</div>
-                <div class="sidebar-widget-container" id="tv-global-indices"></div>
+                <div class="section-label"><i class="fas fa-list"></i> WATCHLISTS</div>
+                <div class="watchlist-sidebar-tabs">
+                    <button class="sidebar-tab active" data-tab="india"><i class="fas fa-flag-india"></i> INDIA</button>
+                    <button class="sidebar-tab" data-tab="global"><i class="fas fa-globe"></i> GLOBAL</button>
+                    <button class="sidebar-tab" data-tab="commodities"><i class="fas fa-gem"></i> COMMODITIES</button>
+                </div>
+                <div class="sidebar-widget-container">
+                    <div class="sidebar-panel active" id="india-panel">
+                        <div id="kite-india-watchlist" class="kite-watchlist"></div>
+                    </div>
+                    <div class="sidebar-panel" id="global-panel">
+                        <div id="tv-global-indices"></div>
+                    </div>
+                    <div class="sidebar-panel" id="commodities-panel">
+                        <div id="tv-commodities-widget"></div>
+                    </div>
+                </div>
             </div>
         </div>
     </section>
@@ -137,24 +152,6 @@
         </div>
     </section>
 
-    <!-- ROW 4: Watchlist (Commodities / ETFs) -->
-    <section class="watchlist-section">
-        <div class="section-header">
-            <h2><i class="fas fa-list-check"></i> WATCHLIST</h2>
-            <div class="watchlist-tabs">
-                <button class="wl-tab active" data-tab="commodities"><i class="fas fa-gem"></i> Commodities</button>
-                <button class="wl-tab" data-tab="etfs"><i class="fas fa-layer-group"></i> ETFs</button>
-            </div>
-        </div>
-        <div class="watchlist-content">
-            <div class="wl-panel active" id="commodities-panel">
-                <div id="tv-commodities-widget"></div>
-            </div>
-            <div class="wl-panel" id="etfs-panel">
-                <div id="tv-etfs-widget"></div>
-            </div>
-        </div>
-    </section>
 
     <!-- ROW 5: News | Heatmap | Trump News -->
     <section class="bottom-section">

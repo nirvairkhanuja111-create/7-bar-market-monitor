@@ -1,0 +1,24 @@
+  🔗 Kite Connect enabled (API Key: ub3sco...)
+  ⚠️  Kite not authenticated — click "Login to Zerodha" on dashboard
+
+  🟢  7 Bar Market Monitor v2.1 running at http://localhost:3000
+
+  📊 NSE Endpoints:
+     /api/market-data       Advance/Decline, Sectors, Sentiment
+     /api/gainers           Top 10 Gainers (Nifty 500)
+     /api/losers            Top 10 Losers (Nifty 500)
+     /api/seven-bar-stocks  Stocks near 52-week high
+     /api/health            Server health status
+
+  📰 News Endpoints:
+     /api/news              Indian Market News
+     /api/trump-news        Trump & Trade War News
+
+  🔗 Kite Connect:
+     /auth/kite             Login to Zerodha
+     /auth/kite/callback    OAuth callback
+     /api/kite/status       Auth status
+     /api/kite/holdings     Portfolio holdings
+     /api/kite/positions    Open positions
+     /api/kite/profile      User profile
+
