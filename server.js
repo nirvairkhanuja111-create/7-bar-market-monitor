@@ -561,6 +561,34 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
+    if (pathname === '/api/sector-stocks') {
+        try {
+            const sectorParam = parsedUrl.searchParams.get('sector');
+            if (!sectorParam) {
+                sendJSON(res, 200, { error: 'No sector provided', stocks: [] });
+                return;
+            }
+            const { data, cached } = await getCachedNSE(`sector-${sectorParam}`, `/api/equity-stockIndices?index=${encodeURIComponent(sectorParam)}`);
+            const allStocks = (data.data || []).filter(s => s.symbol && s.symbol !== sectorParam);
+            const sorted = allStocks
+                .map(s => ({
+                    symbol: s.symbol,
+                    companyName: s.meta?.companyName || '',
+                    ltp: parseFloat(s.lastPrice) || 0,
+                    change: parseFloat(s.pChange) || 0,
+                    open: parseFloat(s.open) || 0,
+                    high: parseFloat(s.dayHigh) || 0,
+                    low: parseFloat(s.dayLow) || 0,
+                }))
+                .sort((a, b) => b.change - a.change);
+            sendJSON(res, 200, { source: 'nse', cached, stocks: sorted, timestamp: new Date().toISOString() });
+        } catch (e) {
+            console.error('❌ /api/sector-stocks error:', e.message);
+            sendJSON(res, 200, { error: e.message, stocks: [], source: 'fallback' });
+        }
+        return;
+    }
+
     // ===== News Endpoints =====
 
     if (pathname === '/api/news') {

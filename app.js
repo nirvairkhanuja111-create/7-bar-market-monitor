@@ -602,6 +602,7 @@ function initSidebarTabs() {
 function renderSectorHeatmap(sectors) {
     const container = document.getElementById("customHeatmap");
     if (!container) return;
+
     container.innerHTML = sectors.map(s => {
         const change = s.change;
         const intensity = Math.min(Math.abs(change) / 4, 1);
@@ -609,10 +610,118 @@ function renderSectorHeatmap(sectors) {
         if (change >= 0) { bg = `rgb(${Math.round(10 - 10 * intensity)}, ${Math.round(40 + 120 * intensity)}, ${Math.round(30 + 30 * intensity)})`; }
         else { bg = `rgb(${Math.round(40 + 140 * intensity)}, ${Math.round(20 + 10 * intensity)}, ${Math.round(20 + 10 * intensity)})`; }
         return `
-            <div class="heatmap-cell" style="background:${bg}; border-color: ${change >= 0 ? 'rgba(0,230,118,0.15)' : 'rgba(255,82,82,0.15)'}">
+            <div class="heatmap-cell" data-sector="${s.name}" style="background:${bg}; border-color: ${change >= 0 ? 'rgba(0,230,118,0.15)' : 'rgba(255,82,82,0.15)'}">
                 <div class="heatmap-cell-name">${s.name}</div>
                 <div class="heatmap-cell-change">${change >= 0 ? '+' : ''}${change.toFixed(2)}%</div>
                 <div class="heatmap-cell-fullname">${s.fullName}</div>
+            </div>
+        `;
+    }).join('');
+
+    // Add click handlers to cells
+    document.querySelectorAll('.heatmap-cell').forEach(cell => {
+        cell.addEventListener('click', () => {
+            const sectorName = cell.getAttribute('data-sector');
+            const sector = sectors.find(s => s.name === sectorName);
+            if (sector) openSectorModal(sector);
+        });
+    });
+}
+
+// ===== SECTOR MODAL =====
+function openSectorModal(sector) {
+    // Create modal if not exists
+    let modal = document.getElementById('sector-modal');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'sector-modal';
+        modal.className = 'modal';
+        modal.innerHTML = `
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2 id="modal-title"></h2>
+                    <button class="modal-close">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div id="modal-stocks" class="modal-stocks"></div>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+
+        // Close on X button
+        modal.querySelector('.modal-close').addEventListener('click', () => {
+            modal.style.display = 'none';
+        });
+
+        // Close on outside click
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) modal.style.display = 'none';
+        });
+    }
+
+    // Update modal content
+    document.getElementById('modal-title').textContent = sector.fullName + ' - Stocks';
+    document.getElementById('modal-stocks').innerHTML = '<div class="modal-loading">Loading stocks...</div>';
+    modal.style.display = 'flex';
+
+    // Fetch stocks for this sector from NSE
+    fetchSectorStocks(sector.fullName);
+}
+
+async function fetchSectorStocks(sectorName) {
+    const sectorMap = {
+        'Nifty IT': 'NIFTY IT',
+        'Nifty Bank': 'NIFTY BANK',
+        'Nifty Pharma': 'NIFTY PHARMA',
+        'Nifty Auto': 'NIFTY AUTO',
+        'Nifty FMCG': 'NIFTY FMCG',
+        'Nifty Metal': 'NIFTY METAL',
+        'Nifty Realty': 'NIFTY REALTY',
+        'Nifty Energy': 'NIFTY ENERGY',
+        'Nifty Infra': 'NIFTY INFRASTRUCTURE',
+        'Nifty PSU Bank': 'NIFTY PSU BANK',
+        'Nifty Media': 'NIFTY MEDIA',
+        'Nifty Financial Services': 'NIFTY FINANCIAL SERVICES',
+        'Nifty Healthcare': 'NIFTY HEALTHCARE INDEX',
+        'Nifty Consumer Durables': 'NIFTY CONSUMER DURABLES',
+        'Nifty Oil & Gas': 'NIFTY OIL & GAS',
+    };
+
+    const nseSector = sectorMap[sectorName] || sectorName;
+
+    try {
+        const response = await fetch(`/api/sector-stocks?sector=${encodeURIComponent(nseSector)}`);
+        if (!response.ok) throw new Error('Failed to fetch');
+        const data = await response.json();
+        renderSectorStocks(data.stocks || []);
+    } catch (e) {
+        console.warn('Sector stocks fetch error:', e.message);
+        document.getElementById('modal-stocks').innerHTML = '<div class="modal-error">Failed to load stocks</div>';
+    }
+}
+
+function renderSectorStocks(stocks) {
+    const container = document.getElementById('modal-stocks');
+    if (!stocks.length) {
+        container.innerHTML = '<div class="modal-empty">No stocks found</div>';
+        return;
+    }
+
+    container.innerHTML = stocks.map((s, i) => {
+        const change = parseFloat(s.change || s.pChange || 0);
+        const changeClass = change >= 0 ? 'positive' : 'negative';
+        return `
+            <div class="modal-stock-item">
+                <span class="modal-rank">${i + 1}</span>
+                <div class="modal-stock-info">
+                    <div class="modal-stock-name">${s.symbol || s.SYMBOL || ''}</div>
+                    <div class="modal-stock-company">${s.meta?.companyName || s.companyName || ''}</div>
+                </div>
+                <div class="modal-stock-price">
+                    <div class="modal-ltp">₹${parseFloat(s.lastPrice || s.ltp || 0).toFixed(2)}</div>
+                    <div class="modal-change ${changeClass}">${change >= 0 ? '+' : ''}${change.toFixed(2)}%</div>
+                </div>
             </div>
         `;
     }).join('');
