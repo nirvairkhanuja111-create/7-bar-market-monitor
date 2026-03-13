@@ -155,24 +155,12 @@ document.addEventListener("DOMContentLoaded", () => {
     // Show shimmer loading in stock lists
     showShimmerLoading();
 
-    // Check Kite Connect status
-    checkKiteStatus();
-
-    // Check for Kite login success redirect
-    const urlParams = new URLSearchParams(window.location.search);
-    if (urlParams.get('kite') === 'success') {
-        // Clean URL and refresh Kite status
-        window.history.replaceState({}, document.title, '/');
-        checkKiteStatus();
-    }
-
     // Load all data in parallel
     loadAllData();
 
     // Auto-refresh
     setInterval(loadAllData, 60000);
     setInterval(rotateQuote, 20000);
-    setInterval(checkKiteStatus, 30000); // Check kite status every 30s
 });
 
 function showShimmerLoading() {
@@ -188,6 +176,8 @@ async function loadAllData() {
         loadMarketData(),
         loadStockColumns(),
         fetchLiveNews(),
+        loadIndexKPIs(),
+        loadMBIData(),
     ]);
 
     document.getElementById("lastUpdated").textContent = new Date().toLocaleTimeString("en-IN", {
@@ -213,27 +203,33 @@ async function loadMarketData() {
     // Update source badge
     updateSourceBadge('advDecSource', source);
 
-    // Sentiment
+    // Sentiment — 3-state EMA
     const sentIcon = document.getElementById("sentimentIcon");
     const sentText = document.getElementById("sentimentText");
     const sentDetail = document.getElementById("sentimentDetail");
     const sentCard = document.getElementById("sentimentCard");
+    const emaStatus = data.niftyEMAStatus || (data.niftyAbove21EMA ? 'yes' : 'no');
+    const e21 = data.ema21 ? `21 EMA: ${data.ema21.toLocaleString('en-IN')}` : '';
+    const e50 = data.ema50 ? `50 EMA: ${data.ema50.toLocaleString('en-IN')}` : '';
+    const emaLabel = [e21, e50].filter(Boolean).join(' | ');
 
-    if (data.niftyAbove21EMA) {
+    if (emaStatus === 'yes') {
         sentIcon.className = "sentiment-icon bullish";
-        sentText.textContent = "YES — BULLISH";
+        sentText.textContent = "YES — ABOVE 21 EMA";
         sentText.className = "sentiment-text bullish";
-        sentDetail.textContent = source === 'live'
-            ? `Nifty ${data.niftyChange ? (data.niftyChange > 0 ? '+' : '') + data.niftyChange.toFixed(2) + '%' : ''} | Trend Positive`
-            : "Nifty ABOVE 21 EMA | Breakouts favored";
+        sentDetail.textContent = `Nifty ABOVE 21 EMA | Breakouts favored${emaLabel ? ' | ' + emaLabel : ''}`;
         sentCard.style.borderColor = "rgba(0, 230, 118, 0.3)";
+    } else if (emaStatus === 'selective') {
+        sentIcon.className = "sentiment-icon selective";
+        sentText.textContent = "SELECTIVE — ABOVE 50 EMA";
+        sentText.className = "sentiment-text selective";
+        sentDetail.textContent = `Nifty below 21 EMA but above 50 EMA | Small positions only${emaLabel ? ' | ' + emaLabel : ''}`;
+        sentCard.style.borderColor = "rgba(255, 215, 64, 0.3)";
     } else {
         sentIcon.className = "sentiment-icon bearish";
-        sentText.textContent = "NO — BEARISH";
+        sentText.textContent = "NO — BELOW 50 EMA";
         sentText.className = "sentiment-text bearish";
-        sentDetail.textContent = source === 'live'
-            ? `Nifty ${data.niftyChange ? (data.niftyChange > 0 ? '+' : '') + data.niftyChange.toFixed(2) + '%' : ''} | Trend Negative`
-            : "Nifty BELOW 21 EMA | Breakouts likely to fail";
+        sentDetail.textContent = `Nifty BELOW 50 EMA | Avoid breakout trades${emaLabel ? ' | ' + emaLabel : ''}`;
         sentCard.style.borderColor = "rgba(255, 82, 82, 0.3)";
     }
     updateSourceBadge('sentimentSource', source);
@@ -242,6 +238,52 @@ async function loadMarketData() {
     if (data.sectors && data.sectors.length > 0) {
         renderSectorHeatmap(data.sectors);
     }
+}
+
+// ===== INDEX KPI CARDS =====
+async function loadIndexKPIs() {
+    try {
+        const res = await fetch('/api/index-quotes');
+        if (!res.ok) throw new Error('Failed');
+        const data = await res.json();
+        const idx = data.indices || {};
+
+        renderIndexCard('kpi-nifty', idx.nifty);
+        renderIndexCard('kpi-banknifty', idx.banknifty);
+        renderIndexCard('kpi-smallcap', idx.smallcap);
+        renderIndexCard('kpi-gold', idx.gold);
+        renderIndexCard('kpi-usdinr', idx.usdinr);
+    } catch (e) {
+        console.warn('Index KPI load failed:', e.message);
+    }
+}
+
+function renderIndexCard(cardId, data) {
+    if (!data) return;
+    const card = document.getElementById(cardId);
+    if (!card) return;
+
+    const valEl = card.querySelector('.kpi-index-value');
+    const chgEl = card.querySelector('.kpi-index-change');
+    if (!valEl || !chgEl) return;
+
+    const last = parseFloat(data.last);
+    const change = data.change || 0;
+    const pointChange = data.pointChange || 0;
+    const sign = change >= 0 ? '+' : '';
+
+    // Format value: for Gold use USD format, for USDINR use 2dp, otherwise en-IN
+    if (cardId === 'kpi-gold') {
+        valEl.textContent = '$' + last.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    } else if (cardId === 'kpi-usdinr') {
+        valEl.textContent = '\u20b9' + last.toFixed(4);
+    } else {
+        valEl.textContent = last.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+
+    chgEl.textContent = `${sign}${Math.abs(pointChange).toFixed(2)} (${sign}${change.toFixed(2)}%)`;
+    chgEl.className = `kpi-index-change ${change >= 0 ? 'positive' : 'negative'}`;
+    card.className = `kpi-index-card ${change >= 0 ? 'up' : 'down'}`;
 }
 
 // ===== STOCK COLUMNS =====
@@ -379,8 +421,8 @@ function renderFallbackMarketNews() {
 
 function renderFallbackTrumpNews() {
     renderNewsList('trumpNewsList', [
-        { title: "Trump tariff impact on Indian goods", source: "Reuters", timeAgo: "Recent", tag: "TARIFF" },
-        { title: "India-US trade talks: tariff exemptions", source: "Bloomberg", timeAgo: "Recent", tag: "TRADE" },
+        { title: "Trump latest updates loading...", source: "Google News", timeAgo: "Recent", tag: "TRUMP" },
+        { title: "Check back shortly for live updates", source: "—", timeAgo: "Recent", tag: "TRUMP" },
     ], 'fallback');
 }
 
@@ -439,126 +481,62 @@ function updateMarketStatus() {
     else { statusEl.classList.remove("open"); textEl.textContent = day >= 1 && day <= 5 && timeNum >= 900 && timeNum < 915 ? "PRE-MARKET" : "MARKET CLOSED"; }
 }
 
-// ===== KITE TICKER (CNBC-style marquee) =====
-const TICKER_SYMBOLS = [
-    'RELIANCE', 'TCS', 'INFY', 'HDFC', 'WIPRO', 'LT', 'ASIANPAINT', 'MARUTI',
-    'HCLTECH', 'BAJAJFINSV', 'ICICIBANK', 'SBIN', 'NESTLEIND', 'POWERGRID',
-    'HINDUNILVR', 'BAJAJ-AUTO', 'TITAN', 'ITC', 'AXISBANK', 'JSWSTEEL'
-];
+// ===== CNBC-STYLE MARQUEE TICKER (ALL Nifty 500) =====
 
-async function refreshKiteTicker() {
+async function refreshTicker() {
     const container = document.getElementById('kite-ticker');
     if (!container) return;
 
     try {
-        const response = await fetch(`/api/kite/quote?symbols=${TICKER_SYMBOLS.join(',')}`);
+        const response = await fetch('/api/ticker-data');
         if (!response.ok) throw new Error('Failed to fetch');
         const data = await response.json();
+        const stocks = data.stocks || [];
 
-        if (!data.quotes || data.quotes.length === 0) throw new Error('No quotes received');
+        if (stocks.length === 0) throw new Error('No ticker data');
 
-        let html = '<div class="kite-ticker-strip">';
-        data.quotes.forEach(quote => {
-            if (!quote.symbol || quote.ltp === undefined) return;
-            const change = quote.change || 0;
-            const changeClass = change >= 0 ? 'positive' : 'negative';
-            const symbol = quote.symbol.replace('NSE:', '');
-            html += `
-                <div class="kite-ticker-item">
-                    <span class="ticker-dot"></span>
-                    <span class="ticker-symbol">${symbol}</span>
-                    <span class="ticker-price">₹${parseFloat(quote.ltp).toFixed(2)}</span>
-                    <span class="ticker-change ${changeClass}">${change >= 0 ? '+' : ''}${parseFloat(change).toFixed(2)}%</span>
-                </div>
-            `;
-        });
-        html += '</div>';
-        container.innerHTML = html;
+        // Build ticker items HTML
+        const buildItems = (list) => list.map(s => {
+            const change = parseFloat(s.change) || 0;
+            const cls = change >= 0 ? 'positive' : 'negative';
+            return `<div class="kite-ticker-item">
+                <span class="ticker-dot ${cls}"></span>
+                <span class="ticker-symbol">${s.symbol}</span>
+                <span class="ticker-price">\u20B9${parseFloat(s.ltp).toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2})}</span>
+                <span class="ticker-change ${cls}">${change >= 0 ? '+' : ''}${change.toFixed(2)}%</span>
+            </div>`;
+        }).join('');
+
+        // Double the items for seamless infinite scroll
+        const itemsHtml = buildItems(stocks);
+        container.innerHTML = `<div class="kite-ticker-strip">${itemsHtml}${itemsHtml}</div>`;
+
+        // Set animation duration based on stock count (more stocks = slower scroll)
+        const strip = container.querySelector('.kite-ticker-strip');
+        if (strip) {
+            const duration = Math.max(203, stocks.length * 1.775); // 30% slower again (cumulative 69% slower from base)
+            strip.style.animationDuration = duration + 's';
+        }
     } catch (e) {
-        console.warn('Kite ticker error:', e.message);
-        container.innerHTML = '<div class="ticker-error">Live ticker unavailable</div>';
+        console.warn('Ticker error:', e.message);
+        container.innerHTML = '<div class="ticker-error">Connecting to market data...</div>';
     }
 }
 
-function initKiteTicker() {
-    refreshKiteTicker();
-    setInterval(refreshKiteTicker, 5000); // Refresh every 5 seconds
+function initTicker() {
+    refreshTicker();
+    setInterval(refreshTicker, 10000); // Refresh every 10s
 }
 
 // ===== ALL TRADINGVIEW WIDGETS =====
 function initAllTradingViewWidgets() {
-    // 1. KITE TICKER (replaces TradingView ticker tape)
-    initKiteTicker();
+    // 1. CNBC-STYLE TICKER (Kite or NSE fallback)
+    initTicker();
 
-    // 2. KPI TICKERS
-    injectTVWidget("tv-kpi-tickers", "embed-widget-tickers", {
-        symbols: [
-            { proName: "NSE:NIFTY", title: "NIFTY 50" }, { proName: "NSE:BANKNIFTY", title: "BANK NIFTY" },
-            { proName: "BSE:SENSEX", title: "SENSEX" }, { proName: "NSE:CNXSMALLCAP", title: "SMALLCAP" },
-            { proName: "TVC:GOLD", title: "GOLD" }, { proName: "FX_IDC:USDINR", title: "USD/INR" },
-            { proName: "NYMEX:CL1!", title: "CRUDE OIL" }, { proName: "TVC:DXY", title: "DXY" },
-        ],
-        isTransparent: true, showSymbolLogo: true, colorTheme: "dark", locale: "en",
-    });
+    // 2. Gold & USDINR KPI cards — rendered via loadIndexKPIs() from Yahoo Finance data
 
-    // 3. MAIN CHART
-    injectTVWidget("tv-main-chart", "embed-widget-advanced-chart", {
-        autosize: true, symbol: "BSE:SENSEX", interval: "D", timezone: "Asia/Kolkata",
-        theme: "dark", style: "1", locale: "en", withdateranges: true, hide_side_toolbar: false,
-        allow_symbol_change: true, details: true, hotlist: true, calendar: false,
-        studies: ["STD;EMA"], show_popup_button: true, popup_width: "1000", popup_height: "650",
-        support_host: "https://www.tradingview.com",
-    });
-
-    // 4. GLOBAL INDICES SIDEBAR
-    injectTVWidget("tv-global-indices", "embed-widget-market-overview", {
-        colorTheme: "dark", dateRange: "1D", showChart: true, locale: "en",
-        width: "100%", height: "100%", largeChartUrl: "", isTransparent: true,
-        showSymbolLogo: true, showFloatingTooltip: true,
-        plotLineColorGrowing: "rgba(0, 230, 118, 1)", plotLineColorFalling: "rgba(255, 82, 82, 1)",
-        gridLineColor: "rgba(42, 46, 57, 0)", scaleFontColor: "rgba(209, 212, 220, 1)",
-        belowLineFillColorGrowing: "rgba(0, 230, 118, 0.05)", belowLineFillColorFalling: "rgba(255, 82, 82, 0.05)",
-        belowLineFillColorGrowingBottom: "rgba(0, 230, 118, 0)", belowLineFillColorFallingBottom: "rgba(255, 82, 82, 0)",
-        symbolActiveColor: "rgba(0, 230, 118, 0.12)",
-        tabs: [
-            { title: "Americas", symbols: [{ s: "SP:SPX", d: "S&P 500" }, { s: "NASDAQ:NDX", d: "NASDAQ 100" }, { s: "DJ:DJI", d: "Dow Jones" }, { s: "TVC:RUT", d: "Russell 2000" }], originalTitle: "Americas" },
-            { title: "Europe", symbols: [{ s: "XETR:DAX", d: "DAX" }, { s: "FTSE:UKX", d: "FTSE 100" }, { s: "EURONEXT:PX1", d: "CAC 40" }], originalTitle: "Europe" },
-            { title: "Asia", symbols: [{ s: "BSE:SENSEX", d: "SENSEX" }, { s: "NSE:NIFTY", d: "NIFTY 50" }, { s: "TVC:NI225", d: "Nikkei 225" }, { s: "HSI:HSI", d: "Hang Seng" }, { s: "SSE:000001", d: "Shanghai Comp" }], originalTitle: "Asia" },
-        ],
-    });
-
-    // 5. COMMODITIES WATCHLIST
-    injectTVWidget("tv-commodities-widget", "embed-widget-market-overview", {
-        colorTheme: "dark", dateRange: "1D", showChart: true, locale: "en", width: "100%", height: "100%",
-        largeChartUrl: "", isTransparent: true, showSymbolLogo: true, showFloatingTooltip: true,
-        plotLineColorGrowing: "rgba(0, 230, 118, 1)", plotLineColorFalling: "rgba(255, 82, 82, 1)",
-        gridLineColor: "rgba(42, 46, 57, 0)", scaleFontColor: "rgba(209, 212, 220, 1)",
-        belowLineFillColorGrowing: "rgba(0, 230, 118, 0.05)", belowLineFillColorFalling: "rgba(255, 82, 82, 0.05)",
-        belowLineFillColorGrowingBottom: "rgba(0, 230, 118, 0)", belowLineFillColorFallingBottom: "rgba(255, 82, 82, 0)",
-        symbolActiveColor: "rgba(0, 230, 118, 0.12)",
-        tabs: [{ title: "Commodities", symbols: [
-            { s: "TVC:GOLD", d: "Gold" }, { s: "TVC:SILVER", d: "Silver" }, { s: "NYMEX:CL1!", d: "Crude Oil WTI" },
-            { s: "NYMEX:NG1!", d: "Natural Gas" }, { s: "MCX:GOLD1!", d: "MCX Gold" }, { s: "MCX:SILVER1!", d: "MCX Silver" },
-            { s: "MCX:CRUDEOIL1!", d: "MCX Crude" }, { s: "MCX:NATURALGAS1!", d: "MCX NatGas" },
-            { s: "MCX:COPPER1!", d: "MCX Copper" }, { s: "COMEX:HG1!", d: "Copper (COMEX)" },
-            { s: "CBOT:ZW1!", d: "Wheat" }, { s: "CBOT:ZC1!", d: "Corn" },
-        ], originalTitle: "Commodities" }],
-    });
-
-
-    // 7. ECONOMIC CALENDAR
-    injectTVWidget("tv-eco-calendar", "embed-widget-events", {
-        colorTheme: "dark", isTransparent: true, width: "100%", height: "100%", locale: "en",
-        importanceFilter: "-1,0,1", countryFilter: "in,us,cn,eu,jp,gb",
-    });
-
-    // 8. GLOBAL STOCK HEATMAP
-    injectTVWidget("tv-global-heatmap", "embed-widget-stock-heatmap", {
-        exchanges: [], dataSource: "SPX500", grouping: "sector", blockSize: "market_cap_basic",
-        blockColor: "change", locale: "en", symbolUrl: "", colorTheme: "dark", hasTopBar: true,
-        isDataSetEnabled: true, isZoomEnabled: true, hasSymbolTooltip: true, isMonoSize: false,
-        width: "100%", height: "100%",
-    });
+    // 3. Stock Analyser (no TradingView widget — custom built)
+    initStockAnalyser();
 }
 
 // ===== TRADINGVIEW WIDGET INJECTOR =====
@@ -716,15 +694,192 @@ function renderSectorStocks(stocks) {
                 <span class="modal-rank">${i + 1}</span>
                 <div class="modal-stock-info">
                     <div class="modal-stock-name">${s.symbol || s.SYMBOL || ''}</div>
-                    <div class="modal-stock-company">${s.meta?.companyName || s.companyName || ''}</div>
+                    <div class="modal-stock-company">${s.companyName || ''}</div>
                 </div>
                 <div class="modal-stock-price">
-                    <div class="modal-ltp">₹${parseFloat(s.lastPrice || s.ltp || 0).toFixed(2)}</div>
+                    <div class="modal-ltp">\u20B9${parseFloat(s.ltp || s.lastPrice || 0).toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2})}</div>
                     <div class="modal-change ${changeClass}">${change >= 0 ? '+' : ''}${change.toFixed(2)}%</div>
                 </div>
             </div>
         `;
     }).join('');
+}
+
+// ===== STOCK ANALYSER (Minervini SEPA) =====
+function initStockAnalyser() {
+    const input = document.getElementById('analyserTicker');
+    const btn = document.getElementById('analyserBtn');
+    if (!input || !btn) return;
+
+    btn.addEventListener('click', () => runAnalysis());
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') runAnalysis(); });
+
+    // Quick pick buttons
+    document.querySelectorAll('.quick-pick').forEach(el => {
+        el.addEventListener('click', () => {
+            input.value = el.dataset.ticker;
+            runAnalysis();
+        });
+    });
+}
+
+async function runAnalysis() {
+    const input = document.getElementById('analyserTicker');
+    const result = document.getElementById('analyserResult');
+    const ticker = input.value.trim().toUpperCase();
+    if (!ticker) return;
+
+    input.value = ticker;
+    result.innerHTML = '<div class="analyser-loading"><div class="spinner"></div><span>Analysing ' + ticker + '...</span></div>';
+
+    try {
+        const res = await fetch(`/api/analyse-stock?symbol=${encodeURIComponent(ticker)}`);
+        const data = await res.json();
+
+        if (data.error) {
+            result.innerHTML = `<div class="analyser-error"><i class="fas fa-exclamation-triangle"></i> ${data.error}</div>`;
+            return;
+        }
+
+        renderAnalysis(data);
+    } catch (e) {
+        result.innerHTML = `<div class="analyser-error"><i class="fas fa-exclamation-triangle"></i> Analysis failed: ${e.message}</div>`;
+    }
+}
+
+function renderAnalysis(data) {
+    const result = document.getElementById('analyserResult');
+    const passCount = data.checks.filter(c => c.pass).length;
+
+    let checksHtml = data.checks.map(c => `
+        <div class="check-item ${c.pass ? 'pass' : 'fail'}">
+            <div class="check-header">
+                <span class="check-icon">${c.pass ? '<i class="fas fa-check-circle"></i>' : '<i class="fas fa-times-circle"></i>'}</span>
+                <span class="check-name">${c.name}</span>
+                <span class="check-weight">+${c.weight}</span>
+            </div>
+            <div class="check-value">${c.value}</div>
+            <div class="check-detail">${c.detail}</div>
+        </div>
+    `).join('');
+
+    result.innerHTML = `
+        <div class="analysis-result">
+            <div class="analysis-header-bar">
+                <div class="analysis-stock-info">
+                    <div class="analysis-symbol">${data.symbol}</div>
+                    <div class="analysis-company">${data.companyName}${data.industry ? ' • ' + data.industry : ''}</div>
+                </div>
+                <div class="analysis-price-info">
+                    <div class="analysis-ltp">\u20B9${parseFloat(data.ltp).toLocaleString('en-IN', {minimumFractionDigits:2})}</div>
+                    <div class="analysis-change ${data.pChange >= 0 ? 'positive' : 'negative'}">${data.pChange >= 0 ? '+' : ''}${data.pChange.toFixed(2)}%</div>
+                </div>
+            </div>
+
+            <div class="analysis-verdict-bar ${data.verdictClass}">
+                <div class="verdict-score">
+                    <div class="score-circle">
+                        <span class="score-num">${data.score}</span>
+                        <span class="score-label">/100</span>
+                    </div>
+                </div>
+                <div class="verdict-text">
+                    <div class="verdict-title">${data.verdict}</div>
+                    <div class="verdict-summary">${passCount}/${data.checks.length} criteria passed</div>
+                </div>
+            </div>
+
+            <div class="analysis-note">${data.minerviniNote}</div>
+
+            <div class="analysis-price-levels">
+                <div class="price-level"><span class="pl-label">Open</span><span class="pl-val">\u20B9${parseFloat(data.open).toLocaleString('en-IN')}</span></div>
+                <div class="price-level"><span class="pl-label">High</span><span class="pl-val green">\u20B9${parseFloat(data.high).toLocaleString('en-IN')}</span></div>
+                <div class="price-level"><span class="pl-label">Low</span><span class="pl-val red">\u20B9${parseFloat(data.low).toLocaleString('en-IN')}</span></div>
+                <div class="price-level"><span class="pl-label">Prev Close</span><span class="pl-val">\u20B9${parseFloat(data.prevClose).toLocaleString('en-IN')}</span></div>
+                <div class="price-level"><span class="pl-label">52W High</span><span class="pl-val green">\u20B9${parseFloat(data.yearHigh).toLocaleString('en-IN')}</span></div>
+                <div class="price-level"><span class="pl-label">52W Low</span><span class="pl-val red">\u20B9${parseFloat(data.yearLow).toLocaleString('en-IN')}</span></div>
+            </div>
+
+            <div class="analysis-checks-title">SEPA CRITERIA BREAKDOWN</div>
+            <div class="analysis-checks">${checksHtml}</div>
+        </div>
+    `;
+}
+
+// ===== MARKET BREADTH (MBI) =====
+async function loadMBIData() {
+    try {
+        const res = await fetch('/api/mbi-data');
+        if (!res.ok) throw new Error('Failed');
+        const data = await res.json();
+        renderMBITable(data.rows || []);
+        updateSourceBadge('mbiSource', data.source || 'live');
+    } catch (e) {
+        console.warn('MBI load failed:', e.message);
+        const wrapper = document.getElementById('mbiTableWrapper');
+        if (wrapper) wrapper.innerHTML = '<div class="no-data">MBI data unavailable</div>';
+    }
+}
+
+function renderMBITable(rows) {
+    const wrapper = document.getElementById('mbiTableWrapper');
+    if (!wrapper || !rows.length) {
+        if (wrapper) wrapper.innerHTML = '<div class="no-data">No MBI data</div>';
+        return;
+    }
+
+    // Show first 15 rows (already newest-first from server)
+    const display = rows.slice(0, 15);
+    const latestEM = display[0]?.em || 0;
+
+    // EM status bar
+    let emStatus = '', emClass = '';
+    if (latestEM >= 25) { emStatus = 'EXTREMELY STRONG'; emClass = 'mbi-em-cyan'; }
+    else if (latestEM >= 15) { emStatus = 'BULLISH — SWING'; emClass = 'mbi-em-green'; }
+    else if (latestEM >= 12) { emStatus = 'CAUTIOUS EXPOSURE'; emClass = 'mbi-em-yellow'; }
+    else if (latestEM >= 9.5) { emStatus = 'WEAK'; emClass = 'mbi-em-orange'; }
+    else { emStatus = 'AVOID LONGS'; emClass = 'mbi-em-red'; }
+
+    let html = `
+        <div class="mbi-current">
+            <div class="mbi-em-label">CURRENT EM</div>
+            <div class="mbi-em-value ${emClass}">${latestEM.toFixed(1)}</div>
+            <div class="mbi-em-status ${emClass}">${emStatus}</div>
+        </div>
+        <div class="mbi-table-scroll">
+        <table class="mbi-table">
+            <thead>
+                <tr>
+                    <th>Date</th>
+                    <th>EM</th>
+                    <th>52WL</th>
+                    <th>52WH</th>
+                    <th>4.5r</th>
+                    <th>Year</th>
+                </tr>
+            </thead>
+            <tbody>
+    `;
+
+    for (const r of display) {
+        let rowClass = '';
+        if (r.em >= 25) rowClass = 'mbi-row-cyan';
+        else if (r.em >= 15) rowClass = 'mbi-row-green';
+        else if (r.em >= 12) rowClass = 'mbi-row-yellow';
+        else rowClass = 'mbi-row-red';
+
+        html += `<tr class="${rowClass}">
+            <td>${r.date}</td>
+            <td class="mbi-em-cell">${r.em.toFixed(1)}</td>
+            <td>${r.wl52}</td>
+            <td>${r.wh52}</td>
+            <td>${r.r45}</td>
+            <td>${r.year}</td>
+        </tr>`;
+    }
+
+    html += '</tbody></table></div>';
+    wrapper.innerHTML = html;
 }
 
 // ===== KITE CONNECT STATUS =====

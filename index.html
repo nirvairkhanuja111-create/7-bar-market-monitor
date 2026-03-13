@@ -35,13 +35,6 @@
                 <span class="status-text">MARKET CLOSED</span>
             </div>
             <div class="header-time" id="headerTime">--:--:--</div>
-            <!-- Kite Connect Login -->
-            <div class="kite-status-bar" id="kiteStatusBar">
-                <a href="/auth/kite" class="kite-login-btn" id="kiteLoginBtn" title="Login to Zerodha Kite">
-                    <i class="fas fa-plug"></i>
-                    <span id="kiteStatusText">Connect Zerodha</span>
-                </a>
-            </div>
         </div>
         <div class="header-right">
             <div class="quote-box" id="quoteBox">
@@ -57,10 +50,36 @@
         <div id="kite-ticker" class="kite-ticker-container"></div>
     </div>
 
-    <!-- KPI ROW: TradingView Tickers + Custom Cards -->
+    <!-- KPI ROW: Live Index Cards + Custom Cards -->
     <section class="kpi-section">
-        <!-- TradingView Tickers strip for indices -->
-        <div class="kpi-tickers-strip" id="tv-kpi-tickers"></div>
+        <!-- NSE-powered Index KPIs -->
+        <div class="kpi-indices-strip" id="kpi-indices">
+            <div class="kpi-index-card" id="kpi-nifty">
+                <div class="kpi-index-name">NIFTY 50</div>
+                <div class="kpi-index-value" id="kpi-nifty-val">--</div>
+                <div class="kpi-index-change" id="kpi-nifty-chg">--</div>
+            </div>
+            <div class="kpi-index-card" id="kpi-banknifty">
+                <div class="kpi-index-name">BANK NIFTY</div>
+                <div class="kpi-index-value" id="kpi-banknifty-val">--</div>
+                <div class="kpi-index-change" id="kpi-banknifty-chg">--</div>
+            </div>
+            <div class="kpi-index-card" id="kpi-smallcap">
+                <div class="kpi-index-name">SMALLCAP</div>
+                <div class="kpi-index-value" id="kpi-smallcap-val">--</div>
+                <div class="kpi-index-change" id="kpi-smallcap-chg">--</div>
+            </div>
+            <div class="kpi-index-card" id="kpi-gold">
+                <div class="kpi-index-name">GOLD $/oz</div>
+                <div class="kpi-index-value" id="kpi-gold-val">--</div>
+                <div class="kpi-index-change" id="kpi-gold-chg">--</div>
+            </div>
+            <div class="kpi-index-card" id="kpi-usdinr">
+                <div class="kpi-index-name">USD/INR</div>
+                <div class="kpi-index-value" id="kpi-usdinr-val">--</div>
+                <div class="kpi-index-change" id="kpi-usdinr-chg">--</div>
+            </div>
+        </div>
 
         <!-- Custom: Advance/Decline -->
         <div class="kpi-card adv-dec-card">
@@ -89,62 +108,30 @@
         </div>
     </section>
 
-    <!-- ROW 2: Main Chart + Watchlists Sidebar -->
-    <section class="chart-row">
-        <div class="chart-main">
-            <div class="section-label"><i class="fas fa-chart-line"></i> CHARTS</div>
-            <div class="chart-container" id="tv-main-chart"></div>
-        </div>
-        <div class="chart-sidebar">
-            <div class="sidebar-widget-box">
-                <div class="section-label"><i class="fas fa-list"></i> WATCHLISTS</div>
-                <div class="watchlist-sidebar-tabs">
-                    <button class="sidebar-tab active" data-tab="india"><i class="fas fa-flag-india"></i> INDIA</button>
-                    <button class="sidebar-tab" data-tab="global"><i class="fas fa-globe"></i> GLOBAL</button>
-                    <button class="sidebar-tab" data-tab="commodities"><i class="fas fa-gem"></i> COMMODITIES</button>
-                </div>
-                <div class="sidebar-widget-container">
-                    <div class="sidebar-panel active" id="india-panel">
-                        <div id="kite-india-watchlist" class="kite-watchlist"></div>
-                    </div>
-                    <div class="sidebar-panel" id="global-panel">
-                        <div id="tv-global-indices"></div>
-                    </div>
-                    <div class="sidebar-panel" id="commodities-panel">
-                        <div id="tv-commodities-widget"></div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </section>
-
-    <!-- ROW 3: 7 Bar Stocks | Gainers | Losers -->
+    <!-- ROW 2: Stocks Near 52-Week High | Gainers | Losers -->
     <section class="three-col-section">
         <div class="col-card">
             <div class="col-header">
                 <div class="col-title"><i class="fas fa-crown"></i> 7 BAR TOP STOCKS <span class="source-badge" id="sevenBarSource"></span></div>
             </div>
-            <div class="col-description">Stocks near all-time high</div>
             <div class="stock-list" id="sevenBarList">
                 <div class="loading-placeholder"><div class="spinner"></div><span>Loading...</span></div>
             </div>
         </div>
         <div class="col-card">
             <div class="col-header">
-                <div class="col-title gainers-title"><i class="fas fa-arrow-trend-up"></i> TOP 10 GAINERS <span class="source-badge" id="gainersSource"></span></div>
+                <div class="col-title gainers-title"><i class="fas fa-arrow-trend-up"></i> TOP 10 LIQUID GAINERS <span class="source-badge" id="gainersSource"></span></div>
                 <span class="col-badge badge-green">NIFTY 500</span>
             </div>
-            <div class="col-description">Biggest gainers of the day</div>
             <div class="stock-list" id="gainersList">
                 <div class="loading-placeholder"><div class="spinner"></div><span>Loading...</span></div>
             </div>
         </div>
         <div class="col-card">
             <div class="col-header">
-                <div class="col-title losers-title"><i class="fas fa-arrow-trend-down"></i> TOP 10 LOSERS <span class="source-badge" id="losersSource"></span></div>
+                <div class="col-title losers-title"><i class="fas fa-arrow-trend-down"></i> TOP 10 LIQUID LOSERS <span class="source-badge" id="losersSource"></span></div>
                 <span class="col-badge badge-red">NIFTY 500</span>
             </div>
-            <div class="col-description">Biggest losers of the day</div>
             <div class="stock-list" id="losersList">
                 <div class="loading-placeholder"><div class="spinner"></div><span>Loading...</span></div>
             </div>
@@ -152,7 +139,8 @@
     </section>
 
 
-    <!-- ROW 5: News | Heatmap | Trump News -->
+
+    <!-- ROW 3: News | Heatmap | Trump News -->
     <section class="bottom-section">
         <!-- Live Market News -->
         <div class="bottom-card news-card">
@@ -178,7 +166,7 @@
         <!-- Trump News -->
         <div class="bottom-card trump-card">
             <div class="card-header">
-                <h3><i class="fas fa-landmark"></i> TRUMP & TRADE WAR</h3>
+                <h3><i class="fas fa-flag-usa"></i> TRUMPOMETER</h3>
                 <span class="live-badge">LIVE</span>
             </div>
             <div class="news-list" id="trumpNewsList">
@@ -187,15 +175,86 @@
         </div>
     </section>
 
-    <!-- ROW 6: Economic Calendar + Global Heatmap -->
-    <section class="calendar-section">
-        <div class="calendar-card">
-            <div class="section-label"><i class="fas fa-calendar-days"></i> ECONOMIC CALENDAR</div>
-            <div class="calendar-container" id="tv-eco-calendar"></div>
+    <!-- ROW 4: Market Breadth (MBI) -->
+    <section class="mbi-section">
+        <div class="mbi-card">
+            <div class="card-header">
+                <h3><i class="fas fa-chart-bar"></i> MARKET BREADTH (MBI)</h3>
+                <span class="source-badge" id="mbiSource"></span>
+            </div>
+            <div class="mbi-content">
+                <div class="mbi-table-wrapper" id="mbiTableWrapper">
+                    <div class="loading-placeholder"><div class="spinner"></div><span>Loading MBI data...</span></div>
+                </div>
+                <div class="mbi-rules">
+                    <div class="mbi-rules-title">HOW TO READ MBI</div>
+                    <div class="mbi-rule">
+                        <span class="mbi-rule-dot mbi-caution"></span>
+                        <span><strong>EM 12–15:</strong> Progressive exposure — start adding positions cautiously</span>
+                    </div>
+                    <div class="mbi-rule">
+                        <span class="mbi-rule-dot mbi-bullish"></span>
+                        <span><strong>EM &gt;15:</strong> Best swing trading environment — aggressive trading favored</span>
+                    </div>
+                    <div class="mbi-rule">
+                        <span class="mbi-rule-dot mbi-danger"></span>
+                        <span><strong>EM &lt;9.5:</strong> Avoid longs — market conditions unfavorable for breakouts</span>
+                    </div>
+                    <div class="mbi-rule">
+                        <span class="mbi-rule-dot mbi-strong"></span>
+                        <span><strong>EM &gt;25:</strong> Extremely strong breadth — rare, ride the momentum</span>
+                    </div>
+                    <div class="mbi-legend">
+                        <div class="mbi-legend-title">DAY COLORS</div>
+                        <div class="mbi-legend-items">
+                            <span class="mbi-legend-item"><span class="mbi-swatch mbi-red-swatch"></span> EM &lt;12</span>
+                            <span class="mbi-legend-item"><span class="mbi-swatch mbi-yellow-swatch"></span> EM 12–15</span>
+                            <span class="mbi-legend-item"><span class="mbi-swatch mbi-green-swatch"></span> EM 15–25</span>
+                            <span class="mbi-legend-item"><span class="mbi-swatch mbi-cyan-swatch"></span> EM &gt;25</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
         </div>
-        <div class="heatmap-global-card">
-            <div class="section-label"><i class="fas fa-globe"></i> GLOBAL STOCK HEATMAP</div>
-            <div class="global-heatmap-container" id="tv-global-heatmap"></div>
+    </section>
+
+    <!-- ROW 5: Stock Analyser (Minervini SEPA) -->
+    <section class="analyser-section">
+        <div class="analyser-card">
+            <div class="card-header">
+                <h3><i class="fas fa-microscope"></i> STOCK ANALYSER <span class="analyser-badge">MINERVINI SEPA</span></h3>
+            </div>
+            <div class="analyser-content">
+                <div class="analyser-input-area">
+                    <div class="analyser-search">
+                        <input type="text" id="analyserTicker" class="analyser-input" placeholder="Enter NSE ticker (e.g. TRENT, DIXON)" autocomplete="off" spellcheck="false">
+                        <button id="analyserBtn" class="analyser-btn"><i class="fas fa-search"></i> ANALYSE</button>
+                    </div>
+                    <div class="analyser-hint">NSE TICKER ONLY — e.g. TRENT, not TRENT.NS</div>
+                    <div class="analyser-quick-picks" id="analyserQuickPicks">
+                        <span class="quick-pick" data-ticker="TRENT">TRENT</span>
+                        <span class="quick-pick" data-ticker="DIXON">DIXON</span>
+                        <span class="quick-pick" data-ticker="PERSISTENT">PERSISTENT</span>
+                        <span class="quick-pick" data-ticker="ZOMATO">ZOMATO</span>
+                        <span class="quick-pick" data-ticker="KAYNES">KAYNES</span>
+                        <span class="quick-pick" data-ticker="TATAELXSI">TATAELXSI</span>
+                    </div>
+                </div>
+                <div class="analyser-result" id="analyserResult">
+                    <div class="analyser-placeholder">
+                        <i class="fas fa-chart-line"></i>
+                        <p>Enter a ticker to get Minervini-style SEPA analysis</p>
+                        <div class="analyser-method-summary">
+                            <div class="method-item"><span class="method-check">1</span> Trend Template (Price vs 50/150/200 SMA)</div>
+                            <div class="method-item"><span class="method-check">2</span> 52-Week High Proximity</div>
+                            <div class="method-item"><span class="method-check">3</span> Relative Strength vs Nifty</div>
+                            <div class="method-item"><span class="method-check">4</span> Volume Pattern Analysis</div>
+                            <div class="method-item"><span class="method-check">5</span> Stage Analysis (Weinstein)</div>
+                            <div class="method-item"><span class="method-check">6</span> Breakout Readiness Score</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
         </div>
     </section>
 

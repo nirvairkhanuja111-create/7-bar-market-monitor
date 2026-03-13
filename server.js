@@ -39,6 +39,83 @@ const MIME_TYPES = {
     '.woff2': 'font/woff2',
 };
 
+// ===== YAHOO FINANCE DATA LAYER =====
+
+function fetchYahooFinance(symbol, range = '3mo', interval = '1d') {
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=${interval}&range=${range}`;
+    return new Promise((resolve, reject) => {
+        https.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' } }, (res) => {
+            let data = '';
+            res.on('data', chunk => data += chunk);
+            res.on('end', () => {
+                try {
+                    const json = JSON.parse(data);
+                    const result = json.chart?.result?.[0];
+                    if (!result) { reject(new Error('No Yahoo data')); return; }
+                    resolve(result);
+                } catch (e) { reject(e); }
+            });
+        }).on('error', reject);
+    });
+}
+
+function calculateEMA(closes, period) {
+    if (closes.length < period) return null;
+    let ema = closes.slice(0, period).reduce((a, b) => a + b, 0) / period;
+    const k = 2 / (period + 1);
+    for (let i = period; i < closes.length; i++) {
+        ema = closes[i] * k + ema * (1 - k);
+    }
+    return ema;
+}
+
+let emaCache = { data: null, time: 0 };
+const EMA_CACHE_TTL = 300000; // 5 min
+
+async function getNiftyEMAStatus() {
+    const now = Date.now();
+    if (emaCache.data && (now - emaCache.time) < EMA_CACHE_TTL) return emaCache.data;
+    try {
+        const result = await fetchYahooFinance('^NSEI', '3mo', '1d');
+        const closes = result.indicators?.quote?.[0]?.close?.filter(c => c != null) || [];
+        if (closes.length < 50) throw new Error('Not enough data');
+        const currentPrice = closes[closes.length - 1];
+        const ema21 = calculateEMA(closes, 21);
+        const ema50 = calculateEMA(closes, 50);
+        let status = 'no'; // below 50 EMA
+        if (currentPrice > ema50) status = 'selective'; // above 50 but below 21
+        if (currentPrice > ema21) status = 'yes'; // above 21 EMA
+        const data = { status, currentPrice, ema21, ema50 };
+        emaCache = { data, time: now };
+        return data;
+    } catch (e) {
+        console.error('Yahoo EMA error:', e.message);
+        return { status: 'no', currentPrice: 0, ema21: 0, ema50: 0 };
+    }
+}
+
+let yqCache = {};
+const YQ_CACHE_TTL = 120000; // 2 min
+
+async function fetchYahooQuote(symbol) {
+    const now = Date.now();
+    if (yqCache[symbol] && (now - yqCache[symbol].time) < YQ_CACHE_TTL) return yqCache[symbol].data;
+    try {
+        const result = await fetchYahooFinance(symbol, '2d', '1d');
+        const meta = result.meta || {};
+        const closes = result.indicators?.quote?.[0]?.close?.filter(c => c != null) || [];
+        const price = meta.regularMarketPrice || closes[closes.length - 1] || 0;
+        const prevClose = meta.chartPreviousClose || (closes.length >= 2 ? closes[closes.length - 2] : price);
+        const change = prevClose ? ((price - prevClose) / prevClose * 100) : 0;
+        const data = { price, prevClose, change };
+        yqCache[symbol] = { data, time: now };
+        return data;
+    } catch (e) {
+        console.error(`Yahoo quote error for ${symbol}:`, e.message);
+        return { price: 0, prevClose: 0, change: 0 };
+    }
+}
+
 // ===== UTILITY: Generic URL Fetcher =====
 
 function fetchUrl(targetUrl) {
@@ -216,7 +293,10 @@ const SECTOR_INDEX_MAP = {
 // ===== NSE API ENDPOINT HANDLERS =====
 
 async function getMarketData() {
-    const { data, cached } = await getCachedNSE('allIndices', '/api/allIndices');
+    const [{ data, cached }, emaStatus] = await Promise.all([
+        getCachedNSE('allIndices', '/api/allIndices'),
+        getNiftyEMAStatus().catch(() => ({ status: 'no', currentPrice: 0, ema21: 0, ema50: 0 })),
+    ]);
 
     // Extract NIFTY 500 advance/decline
     const nifty500 = data.data?.find(idx => idx.index === 'NIFTY 500') || {};
@@ -225,12 +305,8 @@ async function getMarketData() {
     const declining = nifty500.declines || 0;
     const unchanged = nifty500.unchanged || 0;
 
-    // Sentiment: Nifty 50 trend — use percentChange as proxy for 21 EMA position
     const niftyChange = parseFloat(nifty50.percentChange) || 0;
     const niftyLast = parseFloat(nifty50.last) || 0;
-    const niftyOpen = parseFloat(nifty50.open) || 0;
-    // Bullish if: positive change AND price above open (intraday strength)
-    const niftyAbove21EMA = niftyChange > 0 && niftyLast > niftyOpen;
 
     // Extract sector performance
     const sectors = [];
@@ -254,7 +330,9 @@ async function getMarketData() {
         advancing,
         declining,
         unchanged,
-        niftyAbove21EMA,
+        niftyEMAStatus: emaStatus.status, // 'yes' | 'selective' | 'no'
+        ema21: emaStatus.ema21,
+        ema50: emaStatus.ema50,
         niftyLast,
         niftyChange,
         sectors,
@@ -441,7 +519,7 @@ function timeAgo(dateStr) {
     } catch { return ''; }
 }
 
-let newsCache = { market: null, trump: null, marketTime: 0, trumpTime: 0 };
+let newsCache = { market: null, trump: null, usa: null, marketTime: 0, trumpTime: 0, usaTime: 0 };
 const NEWS_CACHE_TTL = 180000;
 
 async function getMarketNews() {
@@ -463,12 +541,12 @@ async function getMarketNews() {
     return result;
 }
 
-async function getTrumpNews() {
+async function getUSANews() {
     const now = Date.now();
-    if (newsCache.trump && (now - newsCache.trumpTime) < NEWS_CACHE_TTL) return newsCache.trump;
+    if (newsCache.usa && (now - newsCache.usaTime) < NEWS_CACHE_TTL) return newsCache.usa;
     const feeds = [
-        'https://news.google.com/rss/search?q=trump+tariff+india+trade+war&hl=en-IN&gl=IN&ceid=IN:en',
-        'https://news.google.com/rss/search?q=trump+tariff+trade+policy+2025&hl=en&gl=US&ceid=US:en',
+        'https://news.google.com/rss/search?q=US+stock+market+S%26P+500+nasdaq+today&hl=en&gl=US&ceid=US:en',
+        'https://news.google.com/rss/search?q=Federal+Reserve+Fed+rate+inflation+economy&hl=en&gl=US&ceid=US:en',
     ];
     let allItems = [];
     for (const feedUrl of feeds) {
@@ -477,12 +555,48 @@ async function getTrumpNews() {
             const items = parseRSSItems(xml);
             items.forEach(item => {
                 const t = item.title.toLowerCase();
-                if (t.includes('tariff')) item.tag = 'TARIFF';
-                else if (t.includes('trade war') || t.includes('trade deal')) item.tag = 'TRADE';
-                else if (t.includes('visa') || t.includes('h-1b')) item.tag = 'VISA';
-                else if (t.includes('china')) item.tag = 'GEOPOLITICS';
-                else if (t.includes('modi') || t.includes('diplomat')) item.tag = 'DIPLOMACY';
-                else item.tag = 'POLICY';
+                if (t.includes('fed') || t.includes('federal reserve') || t.includes('rate cut') || t.includes('rate hike')) item.tag = 'FED';
+                else if (t.includes('s&p') || t.includes('dow') || t.includes('nasdaq') || t.includes('russell')) item.tag = 'INDEX';
+                else if (t.includes('earnings') || t.includes('profit') || t.includes('revenue') || t.includes('eps')) item.tag = 'EARNINGS';
+                else if (t.includes('inflation') || t.includes('cpi') || t.includes('gdp') || t.includes('jobs')) item.tag = 'MACRO';
+                else if (t.includes('tech') || t.includes('ai') || t.includes('nvidia') || t.includes('apple')) item.tag = 'TECH';
+                else item.tag = 'US MARKETS';
+            });
+            allItems = allItems.concat(items);
+        } catch (e) { console.log('USA news feed error:', e.message); }
+    }
+    const seen = new Set();
+    const unique = allItems.filter(item => { const key = item.title.substring(0, 50).toLowerCase(); if (seen.has(key)) return false; seen.add(key); return true; });
+    unique.sort((a, b) => new Date(b.pubDate || 0) - new Date(a.pubDate || 0));
+    const result = { items: unique.slice(0, 10) };
+    newsCache.usa = result; newsCache.usaTime = now;
+    return result;
+}
+
+async function getTrumpNews() {
+    const now = Date.now();
+    if (newsCache.trump && (now - newsCache.trumpTime) < NEWS_CACHE_TTL) return newsCache.trump;
+    const feeds = [
+        'https://news.google.com/rss/search?q=Donald+Trump+White+House+latest+news&hl=en&gl=US&ceid=US:en',
+        'https://news.google.com/rss/search?q=Trump+executive+order+policy+2025&hl=en&gl=US&ceid=US:en',
+        'https://news.google.com/rss/search?q=Trump+iran+russia+china+nato+military&hl=en&gl=US&ceid=US:en',
+    ];
+    let allItems = [];
+    for (const feedUrl of feeds) {
+        try {
+            const xml = await fetchUrl(feedUrl);
+            const items = parseRSSItems(xml);
+            items.forEach(item => {
+                const t = item.title.toLowerCase();
+                if (t.includes('tariff') || t.includes('trade war') || t.includes('trade deal') || t.includes('trade')) item.tag = 'TARIFF';
+                else if (t.includes('iran') || t.includes('war') || t.includes('military') || t.includes('strike') || t.includes('nuclear')) item.tag = 'WAR';
+                else if (t.includes('china') || t.includes('russia') || t.includes('nato') || t.includes('ukraine') || t.includes('korea')) item.tag = 'GEOPOLITICS';
+                else if (t.includes('visa') || t.includes('h-1b') || t.includes('immigra') || t.includes('border') || t.includes('deport')) item.tag = 'IMMIGRATION';
+                else if (t.includes('modi') || t.includes('india') || t.includes('diplomat') || t.includes('zelensky') || t.includes('summit')) item.tag = 'DIPLOMACY';
+                else if (t.includes('market') || t.includes('stock') || t.includes('fed') || t.includes('economy') || t.includes('debt')) item.tag = 'ECONOMY';
+                else if (t.includes('elon') || t.includes('musk') || t.includes('doge') || t.includes('spending')) item.tag = 'DOGE';
+                else if (t.includes('executive') || t.includes('order') || t.includes('sign') || t.includes('white house')) item.tag = 'POLICY';
+                else item.tag = 'TRUMP';
             });
             allItems = allItems.concat(items);
         } catch (e) { console.log('Trump feed fetch error:', e.message); }
@@ -561,6 +675,96 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
+    // ===== Index KPIs (replaces broken TradingView tickers) =====
+    if (pathname === '/api/index-quotes') {
+        try {
+            const { data, cached } = await getCachedNSE('allIndices', '/api/allIndices');
+            const allIdx = data.data || [];
+
+            // Helper to find index by partial match
+            const findIdx = (patterns) => {
+                for (const p of patterns) {
+                    const found = allIdx.find(i => i.index && i.index.toUpperCase().includes(p.toUpperCase()));
+                    if (found) return found;
+                }
+                return null;
+            };
+
+            const makeEntry = (raw) => {
+                if (!raw) return null;
+                // NSE returns change as string like "-829.29" (point change) and percentChange as "-1.08"
+                const last = parseFloat(raw.last) || parseFloat(raw.lastPrice) || 0;
+                const pctChange = parseFloat(raw.percentChange) || parseFloat(raw.pChange) || 0;
+                const ptChange = parseFloat(raw.variation) || parseFloat(raw.change) || 0;
+                return { name: raw.index, last, change: pctChange, pointChange: ptChange };
+            };
+
+            const indices = {};
+            const niftyRaw = findIdx(['NIFTY 50']);
+            const bankRaw = findIdx(['NIFTY BANK']);
+            const smallRaw = findIdx(['NIFTY SMALLCAP 250', 'SMALLCAP 250', 'SMALLCAP 100']);
+
+            if (niftyRaw) indices.nifty = makeEntry(niftyRaw);
+            if (bankRaw) indices.banknifty = makeEntry(bankRaw);
+            if (smallRaw) indices.smallcap = makeEntry(smallRaw);
+
+            // Gold & USDINR from Yahoo Finance
+            try {
+                const [goldData, usdinrData] = await Promise.all([
+                    fetchYahooQuote('GC=F'),
+                    fetchYahooQuote('USDINR=X'),
+                ]);
+                if (goldData && goldData.price) {
+                    const gPtChg = goldData.price - goldData.prevClose;
+                    indices.gold = { name: 'Gold $/oz', last: goldData.price, change: goldData.change, pointChange: parseFloat(gPtChg.toFixed(2)) };
+                }
+                if (usdinrData && usdinrData.price) {
+                    const uPtChg = usdinrData.price - usdinrData.prevClose;
+                    indices.usdinr = { name: 'USD/INR', last: usdinrData.price, change: usdinrData.change, pointChange: parseFloat(uPtChg.toFixed(4)) };
+                }
+            } catch (e) { console.warn('  ⚠️  Gold/USDINR fetch failed:', e.message); }
+
+            // SENSEX is BSE — not in NSE allIndices. Fetch from BSE or use TradingView for display.
+            // For now, calculate from Nifty as proxy or leave for TradingView widget.
+            // Gold & USD/INR: also not in NSE equity indices — handled by TradingView KPI widgets.
+
+            // Debug: log available index names on first call
+            if (!global._indexNamesLogged) {
+                global._indexNamesLogged = true;
+                console.log('  📊 Available NSE indices:', allIdx.map(i => i.index).join(', '));
+            }
+
+            sendJSON(res, 200, { source: cached ? 'cached' : 'live', indices, availableCount: allIdx.length, timestamp: new Date().toISOString() });
+        } catch (e) {
+            console.error('❌ /api/index-quotes error:', e.message);
+            sendJSON(res, 200, { source: 'fallback', indices: {}, error: e.message });
+        }
+        return;
+    }
+
+    // ===== Ticker Data (CNBC-style marquee) =====
+    // Returns ALL Nifty 500 stocks for scrolling ticker
+    if (pathname === '/api/ticker-data') {
+        try {
+            const { data, cached } = await getCachedNSE('nifty500', '/api/equity-stockIndices?index=NIFTY%20500');
+            const allStocks = (data.data || []).filter(s => s.symbol && s.symbol !== 'NIFTY 500');
+
+            const stocks = allStocks
+                .map(s => ({
+                    symbol: s.symbol,
+                    ltp: parseFloat(s.lastPrice) || 0,
+                    change: parseFloat(s.pChange) || 0,
+                }))
+                .filter(s => s.ltp > 0);
+
+            sendJSON(res, 200, { source: cached ? 'cached' : 'live', stocks, count: stocks.length, timestamp: new Date().toISOString() });
+        } catch (e) {
+            console.error('❌ /api/ticker-data error:', e.message);
+            sendJSON(res, 200, { source: 'fallback', stocks: [], error: e.message });
+        }
+        return;
+    }
+
     if (pathname === '/api/sector-stocks') {
         try {
             const sectorParam = parsedUrl.searchParams.get('sector');
@@ -585,6 +789,237 @@ const server = http.createServer(async (req, res) => {
         } catch (e) {
             console.error('❌ /api/sector-stocks error:', e.message);
             sendJSON(res, 200, { error: e.message, stocks: [], source: 'fallback' });
+        }
+        return;
+    }
+
+    // ===== Stock Analyser (Minervini SEPA) =====
+    if (pathname === '/api/analyse-stock') {
+        const symbol = (parsedUrl.searchParams.get('symbol') || '').toUpperCase().trim();
+        if (!symbol) {
+            sendJSON(res, 200, { error: 'No symbol provided' });
+            return;
+        }
+        try {
+            // Try Nifty 500 first, then fall back to individual NSE quote
+            const { data: n500Data } = await getCachedNSE('nifty500', '/api/equity-stockIndices?index=NIFTY%20500');
+            const allStocks = n500Data.data || [];
+            let stock = allStocks.find(s => s.symbol === symbol);
+
+            // If not in Nifty 500, fetch individual stock from NSE quote API
+            if (!stock) {
+                try {
+                    const quoteData = await fetchNSE(`/api/quote-equity?symbol=${encodeURIComponent(symbol)}`);
+                    if (quoteData && quoteData.priceInfo) {
+                        const pi = quoteData.priceInfo;
+                        const ind = quoteData.industryInfo || {};
+                        stock = {
+                            symbol: symbol,
+                            lastPrice: pi.lastPrice,
+                            open: pi.open,
+                            dayHigh: pi.intraDayHighLow?.max || pi.lastPrice,
+                            dayLow: pi.intraDayHighLow?.min || pi.lastPrice,
+                            previousClose: pi.previousClose,
+                            pChange: pi.pChange,
+                            yearHigh: pi.weekHighLow?.max || pi.lastPrice,
+                            yearLow: pi.weekHighLow?.min || pi.lastPrice,
+                            totalTradedVolume: quoteData.securityWiseDP?.quantityTraded || 0,
+                            totalTradedValue: quoteData.securityWiseDP?.tradedValue || 0,
+                            meta: {
+                                companyName: quoteData.info?.companyName || '',
+                                industry: ind.basicIndustry || ind.industry || '',
+                            },
+                        };
+                    }
+                } catch (e) { /* individual quote failed */ }
+            }
+
+            if (!stock) {
+                sendJSON(res, 200, { error: `${symbol} not found on NSE — check the ticker (e.g. TRENT, not TRENT.NS)`, symbol });
+                return;
+            }
+
+            // Get Nifty 500 index change for relative strength comparison
+            const { data: allIdxData } = await getCachedNSE('allIndices', '/api/allIndices');
+            const nifty500Idx = (allIdxData.data || []).find(i => i.index === 'NIFTY 500');
+            const niftyChange = parseFloat(nifty500Idx?.percentChange) || 0;
+
+            const ltp = parseFloat(stock.lastPrice) || 0;
+            const open = parseFloat(stock.open) || 0;
+            const high = parseFloat(stock.dayHigh) || 0;
+            const low = parseFloat(stock.dayLow) || 0;
+            const prevClose = parseFloat(stock.previousClose) || 0;
+            const pChange = parseFloat(stock.pChange) || 0;
+            const yearHigh = parseFloat(stock.yearHigh) || 0;
+            const yearLow = parseFloat(stock.yearLow) || 0;
+            const totalTradedVolume = parseFloat(stock.totalTradedVolume) || 0;
+            const totalTradedValue = parseFloat(stock.totalTradedValue) || 0;
+            const companyName = stock.meta?.companyName || '';
+            const industry = stock.meta?.industry || '';
+
+            // ===== MINERVINI SEPA CRITERIA =====
+            const checks = [];
+            let score = 0;
+
+            // 1. Distance from 52-week high (should be within 25%)
+            const distFrom52WH = yearHigh > 0 ? ((yearHigh - ltp) / yearHigh * 100) : 100;
+            const near52WH = distFrom52WH <= 25;
+            checks.push({
+                name: '52-Week High Proximity',
+                pass: near52WH,
+                value: `${distFrom52WH.toFixed(1)}% below 52WH (₹${yearHigh.toLocaleString('en-IN')})`,
+                detail: near52WH
+                    ? distFrom52WH <= 5 ? 'Excellent — within striking distance of highs' : distFrom52WH <= 15 ? 'Good — stock is in upper range' : 'Acceptable — still within 25% of highs'
+                    : 'Fail — stock is too far from highs, not in Stage 2 uptrend',
+                weight: near52WH ? (distFrom52WH <= 5 ? 20 : distFrom52WH <= 15 ? 15 : 10) : 0,
+            });
+            score += checks[checks.length - 1].weight;
+
+            // 2. Distance from 52-week low (should be >30% above)
+            const aboveLow = yearLow > 0 ? ((ltp - yearLow) / yearLow * 100) : 0;
+            const above52WL = aboveLow >= 30;
+            checks.push({
+                name: '52-Week Low Distance',
+                pass: above52WL,
+                value: `${aboveLow.toFixed(1)}% above 52WL (₹${yearLow.toLocaleString('en-IN')})`,
+                detail: above52WL
+                    ? aboveLow >= 100 ? 'Strong — stock has doubled from lows, powerful uptrend' : 'Good — stock well above lows'
+                    : 'Fail — stock too close to 52-week lows, potential Stage 4 decline',
+                weight: above52WL ? (aboveLow >= 100 ? 15 : 10) : 0,
+            });
+            score += checks[checks.length - 1].weight;
+
+            // 3. Relative Strength vs Nifty 500 (stock should outperform broad market)
+            // If Nifty 500 is -1% and stock is -0.8%, RS = +0.2% → relatively stronger
+            const rsVsNifty = pChange - niftyChange;
+            const rsPositive = rsVsNifty > 0;
+            checks.push({
+                name: 'Relative Strength vs Nifty 500',
+                pass: rsPositive,
+                value: `Stock ${pChange >= 0 ? '+' : ''}${pChange.toFixed(2)}% vs Nifty 500 ${niftyChange >= 0 ? '+' : ''}${niftyChange.toFixed(2)}% (RS: ${rsVsNifty >= 0 ? '+' : ''}${rsVsNifty.toFixed(2)}%)`,
+                detail: rsPositive
+                    ? rsVsNifty >= 2 ? 'Excellent — significantly outperforming the broad market' : 'Good — holding up better than Nifty 500'
+                    : `Weak — underperforming Nifty 500 by ${Math.abs(rsVsNifty).toFixed(2)}%`,
+                weight: rsPositive ? (rsVsNifty >= 2 ? 15 : 10) : 0,
+            });
+            score += checks[checks.length - 1].weight;
+
+            // 4. Price action today (bullish candle pattern)
+            const bodyRange = Math.abs(ltp - open);
+            const totalRange = high - low;
+            const bullishCandle = ltp > open;
+            const closeInUpperHalf = totalRange > 0 ? ((ltp - low) / totalRange) > 0.6 : false;
+            checks.push({
+                name: 'Intraday Price Action',
+                pass: closeInUpperHalf,
+                value: bullishCandle ? `Bullish candle (O:₹${open.toLocaleString('en-IN')} → C:₹${ltp.toLocaleString('en-IN')})` : `Bearish candle (O:₹${open.toLocaleString('en-IN')} → C:₹${ltp.toLocaleString('en-IN')})`,
+                detail: closeInUpperHalf
+                    ? 'Closing in upper half of range — buyers in control'
+                    : 'Closing in lower half — sellers dominant today',
+                weight: closeInUpperHalf ? 10 : 0,
+            });
+            score += checks[checks.length - 1].weight;
+
+            // 5. Volatility Contraction (narrow range today = potential VCP)
+            const dayRangePct = prevClose > 0 ? (totalRange / prevClose * 100) : 0;
+            const tightRange = dayRangePct < 3;
+            checks.push({
+                name: 'Volatility Contraction (VCP Signal)',
+                pass: tightRange,
+                value: `Day range: ${dayRangePct.toFixed(2)}% (₹${low.toLocaleString('en-IN')} – ₹${high.toLocaleString('en-IN')})`,
+                detail: tightRange
+                    ? 'Tight range — possible volatility contraction before breakout'
+                    : dayRangePct > 5 ? 'Wide range — volatile, wait for contraction' : 'Moderate range — monitor for tightening',
+                weight: tightRange ? 10 : (dayRangePct <= 5 ? 5 : 0),
+            });
+            score += checks[checks.length - 1].weight;
+
+            // 6. Volume analysis
+            const avgTurnover = totalTradedValue > 0;
+            const liquidEnough = totalTradedValue >= 100000000; // 10 Cr min
+            checks.push({
+                name: 'Liquidity & Volume',
+                pass: liquidEnough,
+                value: `Turnover: ₹${(totalTradedValue / 10000000).toFixed(1)} Cr | Vol: ${(totalTradedVolume / 100000).toFixed(1)}L`,
+                detail: liquidEnough
+                    ? totalTradedValue >= 500000000 ? 'Excellent liquidity — institutional interest' : 'Adequate liquidity for swing trades'
+                    : 'Low liquidity — risky for larger positions, slippage likely',
+                weight: liquidEnough ? (totalTradedValue >= 500000000 ? 15 : 10) : 0,
+            });
+            score += checks[checks.length - 1].weight;
+
+            // 7. Stage Analysis (simplified)
+            let stage = 'Unknown';
+            if (distFrom52WH <= 10 && aboveLow >= 50) stage = 'Stage 2 — Advancing (BUY zone)';
+            else if (distFrom52WH <= 25 && aboveLow >= 30) stage = 'Stage 2 — Early/Mid Advance';
+            else if (distFrom52WH > 25 && distFrom52WH <= 50 && aboveLow >= 20) stage = 'Stage 1 — Basing (Watch for breakout)';
+            else if (distFrom52WH > 50) stage = 'Stage 4 — Declining (AVOID)';
+            else stage = 'Stage 3 — Topping / Distribution';
+
+            const isStage2 = stage.includes('Stage 2');
+            checks.push({
+                name: 'Weinstein Stage Analysis',
+                pass: isStage2,
+                value: stage,
+                detail: isStage2
+                    ? 'Stock is in the ideal buying stage per Stan Weinstein'
+                    : stage.includes('Stage 1') ? 'Building a base — not ready yet, add to watchlist' : 'Not in buying zone — Minervini only buys Stage 2 stocks',
+                weight: isStage2 ? 15 : (stage.includes('Stage 1') ? 5 : 0),
+            });
+            score += checks[checks.length - 1].weight;
+
+            // Overall verdict
+            let verdict, verdictClass;
+            if (score >= 70) { verdict = 'STRONG BUY CANDIDATE'; verdictClass = 'strong-buy'; }
+            else if (score >= 50) { verdict = 'WATCHLIST — WAIT FOR SETUP'; verdictClass = 'watchlist'; }
+            else if (score >= 30) { verdict = 'WEAK — NOT IDEAL FOR SWING'; verdictClass = 'weak'; }
+            else { verdict = 'AVOID — DOES NOT MEET CRITERIA'; verdictClass = 'avoid'; }
+
+            sendJSON(res, 200, {
+                symbol, companyName, industry, ltp, pChange, open, high, low,
+                prevClose, yearHigh, yearLow,
+                score, verdict, verdictClass,
+                checks,
+                minerviniNote: score >= 50
+                    ? 'This stock shows characteristics that Minervini looks for: proximity to new highs, relative strength, and proper stage positioning. Look for a VCP or tight consolidation near pivot for entry.'
+                    : 'This stock currently does not meet Minervini\'s SEPA criteria. Either wait for it to set up properly or look for better candidates near 52-week highs with strong relative strength.',
+                timestamp: new Date().toISOString(),
+            });
+        } catch (e) {
+            console.error('❌ /api/analyse-stock error:', e.message);
+            sendJSON(res, 200, { error: e.message, symbol });
+        }
+        return;
+    }
+
+    // ===== MBI (Market Breadth Index) from Google Sheet =====
+    if (pathname === '/api/mbi-data') {
+        try {
+            const sheetUrl = 'https://docs.google.com/spreadsheets/d/1SkXCX1Ax3n_EUsa06rzqWSdoCrlbGDENuFUOrMFyErw/gviz/tq?tqx=out:csv&sheet=MBI%20mini';
+            const csv = await fetchUrl(sheetUrl);
+            // Parse CSV — columns: Date, EM, 52WL, 52WH, 4.5r, YEAR
+            const lines = csv.trim().split('\n').filter(l => l.trim());
+            const rows = [];
+            for (let i = 1; i < lines.length; i++) {
+                const vals = lines[i].split(',').map(v => v.replace(/"/g, '').trim());
+                if (vals.length >= 6 && vals[0]) {
+                    const em = parseFloat(vals[1]);
+                    rows.push({
+                        date: vals[0],
+                        em: isNaN(em) ? 0 : em,
+                        wl52: parseFloat(vals[2]) || 0,
+                        wh52: parseFloat(vals[3]) || 0,
+                        r45: parseFloat(vals[4]) || 0,
+                        year: vals[5],
+                    });
+                }
+            }
+            // Sheet has newest rows at the top — take first 30
+            const recent = rows.slice(0, 30);
+            sendJSON(res, 200, { source: 'live', rows: recent, total: rows.length, timestamp: new Date().toISOString() });
+        } catch (e) {
+            console.error('❌ /api/mbi-data error:', e.message);
+            sendJSON(res, 200, { source: 'fallback', rows: [], error: e.message });
         }
         return;
     }
@@ -762,7 +1197,7 @@ server.listen(PORT, () => {
     console.log(`     /api/health            Server health status`);
     console.log(`\n  📰 News Endpoints:`);
     console.log(`     /api/news              Indian Market News`);
-    console.log(`     /api/trump-news        Trump & Trade War News`);
+    console.log(`     /api/trump-news        Trumpometer News`);
     if (kiteClient) {
         console.log(`\n  🔗 Kite Connect:`);
         console.log(`     /auth/kite             Login to Zerodha`);
