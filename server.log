@@ -1,24 +1,28 @@
   🔗 Kite Connect enabled (API Key: ub3sco...)
   ⚠️  Kite not authenticated — click "Login to Zerodha" on dashboard
+node:events:486
+      throw er; // Unhandled 'error' event
+      ^
 
-  🟢  7 Bar Market Monitor v2.1 running at http://localhost:3000
+Error: listen EADDRINUSE: address already in use :::3000
+    at Server.setupListenHandle [as _listen2] (node:net:1948:16)
+    at listenInCluster (node:net:2005:12)
+    at Server.listen (node:net:2110:7)
+    at Object.<anonymous> (C:\Users\nirva\OneDrive\Desktop\7 Bar Market Monitor 2\server.js:727:8)
+    at Module._compile (node:internal/modules/cjs/loader:1812:14)
+    at Object..js (node:internal/modules/cjs/loader:1943:10)
+    at Module.load (node:internal/modules/cjs/loader:1533:32)
+    at Module._load (node:internal/modules/cjs/loader:1335:12)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:255:19)
+    at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:154:5)
+Emitted 'error' event on Server instance at:
+    at emitErrorNT (node:net:1984:8)
+    at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+  code: 'EADDRINUSE',
+  errno: -4091,
+  syscall: 'listen',
+  address: '::',
+  port: 3000
+}
 
-  📊 NSE Endpoints:
-     /api/market-data       Advance/Decline, Sectors, Sentiment
-     /api/gainers           Top 10 Gainers (Nifty 500)
-     /api/losers            Top 10 Losers (Nifty 500)
-     /api/seven-bar-stocks  Stocks near 52-week high
-     /api/health            Server health status
-
-  📰 News Endpoints:
-     /api/news              Indian Market News
-     /api/trump-news        Trump & Trade War News
-
-  🔗 Kite Connect:
-     /auth/kite             Login to Zerodha
-     /auth/kite/callback    OAuth callback
-     /api/kite/status       Auth status
-     /api/kite/holdings     Portfolio holdings
-     /api/kite/positions    Open positions
-     /api/kite/profile      User profile
-
+Node.js v24.14.0

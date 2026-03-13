@@ -972,56 +972,79 @@ body {
     transform: none;
 }
 
-/* ===== KITE TICKER (marquee) ===== */
+/* ===== KITE TICKER (CNBC-style marquee) ===== */
 .kite-ticker-container {
-    background: linear-gradient(90deg, rgba(0, 0, 0, 0.3), transparent 20%, transparent 80%, rgba(0, 0, 0, 0.3));
-    border-bottom: 1px solid var(--border);
+    background: linear-gradient(180deg, var(--bg-secondary) 0%, rgba(17, 24, 39, 0.5) 100%);
+    border-bottom: 2px solid var(--blue);
     padding: 0;
     overflow: hidden;
+    height: 48px;
+    display: flex;
+    align-items: center;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
 }
 
 .kite-ticker-strip {
     display: flex;
-    gap: 24px;
-    padding: 10px 20px;
-    animation: scroll-ticker 30s linear infinite;
+    gap: 0;
+    padding: 0;
+    animation: scroll-ticker 60s linear infinite;
+    height: 100%;
 }
 
 .kite-ticker-item {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: 10px;
     white-space: nowrap;
-    padding: 0 16px;
+    padding: 0 20px;
     border-right: 1px solid var(--border);
+    height: 100%;
+    flex-shrink: 0;
+    transition: background 0.2s;
 }
 
-.kite-ticker-item:last-child { border-right: none; }
+.kite-ticker-item:hover {
+    background: rgba(68, 138, 255, 0.08);
+}
 
-.kite-ticker-symbol {
-    font-weight: 700;
-    font-size: 11px;
+.ticker-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--blue);
+}
+
+.ticker-symbol {
+    font-weight: 800;
+    font-size: 12px;
     color: var(--text-primary);
     letter-spacing: 1px;
+    min-width: 70px;
+    text-transform: uppercase;
 }
 
-.kite-ticker-price {
+.ticker-price {
     font-family: var(--font-mono);
     font-size: 12px;
     color: var(--text-secondary);
+    min-width: 90px;
+    text-align: right;
 }
 
-.kite-ticker-change {
+.ticker-change {
     font-family: var(--font-mono);
     font-size: 12px;
-    font-weight: 600;
+    font-weight: 700;
+    min-width: 65px;
+    text-align: right;
 }
 
-.kite-ticker-change.positive {
+.ticker-change.positive {
     color: var(--green);
 }
 
-.kite-ticker-change.negative {
+.ticker-change.negative {
     color: var(--red);
 }
 
@@ -1030,11 +1053,14 @@ body {
     100% { transform: translateX(-50%); }
 }
 
-.ticker-placeholder {
+.ticker-error {
     padding: 12px 20px;
     text-align: center;
     color: var(--text-muted);
-    font-size: 12px;
+    font-size: 11px;
+    height: 100%;
+    display: flex;
+    align-items: center;
 }
 
 /* ===== SIDEBAR WATCHLIST TABS ===== */

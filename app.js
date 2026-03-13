@@ -270,8 +270,7 @@ function renderSevenBarList(stocks, source) {
             </div>
             <div class="stock-price">
                 <div class="stock-ltp">\u20B9${formatNumber(s.ltp)}</div>
-                <div class="stock-pct near-ath">${s.distFromATH}% from ATH</div>
-                <div class="ath-distance-bar"><div class="ath-distance-fill" style="width:${Math.max(5, 100 - s.distFromATH * 20)}%"></div></div>
+                <div class="stock-pct near-ath">${parseFloat(s.dayChange).toFixed(2)}%</div>
             </div>
         </div>
     `).join("");
@@ -440,36 +439,50 @@ function updateMarketStatus() {
     else { statusEl.classList.remove("open"); textEl.textContent = day >= 1 && day <= 5 && timeNum >= 900 && timeNum < 915 ? "PRE-MARKET" : "MARKET CLOSED"; }
 }
 
-// ===== KITE TICKER (marquee) =====
-async function initKiteTicker() {
+// ===== KITE TICKER (CNBC-style marquee) =====
+const TICKER_SYMBOLS = [
+    'RELIANCE', 'TCS', 'INFY', 'HDFC', 'WIPRO', 'LT', 'ASIANPAINT', 'MARUTI',
+    'HCLTECH', 'BAJAJFINSV', 'ICICIBANK', 'SBIN', 'NESTLEIND', 'POWERGRID',
+    'HINDUNILVR', 'BAJAJ-AUTO', 'TITAN', 'ITC', 'AXISBANK', 'JSWSTEEL'
+];
+
+async function refreshKiteTicker() {
     const container = document.getElementById('kite-ticker');
     if (!container) return;
 
-    const symbols = ['RELIANCE', 'TCS', 'INFY', 'HDFC', 'WIPRO', 'LT', 'ASIANPAINT', 'MARUTI', 'HCLTECH', 'BAJAJFINSV'];
-
     try {
-        const response = await fetch(`/api/kite/quote?symbols=${symbols.join(',')}`);
-        if (!response.ok) throw new Error('Failed to fetch Kite quotes');
+        const response = await fetch(`/api/kite/quote?symbols=${TICKER_SYMBOLS.join(',')}`);
+        if (!response.ok) throw new Error('Failed to fetch');
         const data = await response.json();
 
+        if (!data.quotes || data.quotes.length === 0) throw new Error('No quotes received');
+
         let html = '<div class="kite-ticker-strip">';
-        (data.quotes || []).forEach(quote => {
+        data.quotes.forEach(quote => {
+            if (!quote.symbol || quote.ltp === undefined) return;
             const change = quote.change || 0;
             const changeClass = change >= 0 ? 'positive' : 'negative';
+            const symbol = quote.symbol.replace('NSE:', '');
             html += `
                 <div class="kite-ticker-item">
-                    <span class="kite-ticker-symbol">${quote.symbol}</span>
-                    <span class="kite-ticker-price">₹${quote.ltp || 0}</span>
-                    <span class="kite-ticker-change ${changeClass}">${change >= 0 ? '+' : ''}${change.toFixed(2)}%</span>
+                    <span class="ticker-dot"></span>
+                    <span class="ticker-symbol">${symbol}</span>
+                    <span class="ticker-price">₹${parseFloat(quote.ltp).toFixed(2)}</span>
+                    <span class="ticker-change ${changeClass}">${change >= 0 ? '+' : ''}${parseFloat(change).toFixed(2)}%</span>
                 </div>
             `;
         });
         html += '</div>';
         container.innerHTML = html;
     } catch (e) {
-        console.warn('Kite ticker failed:', e.message);
-        container.innerHTML = '<div class="ticker-placeholder">Loading Kite ticker...</div>';
+        console.warn('Kite ticker error:', e.message);
+        container.innerHTML = '<div class="ticker-error">Live ticker unavailable</div>';
     }
+}
+
+function initKiteTicker() {
+    refreshKiteTicker();
+    setInterval(refreshKiteTicker, 5000); // Refresh every 5 seconds
 }
 
 // ===== ALL TRADINGVIEW WIDGETS =====
