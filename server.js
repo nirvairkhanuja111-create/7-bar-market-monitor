@@ -5,7 +5,7 @@ const path = require('path');
 
 const KiteClient = require('./kite-client');
 
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 const ROOT = __dirname;
 
 // ===== KITE CONNECT SETUP =====
@@ -1208,4 +1208,13 @@ server.listen(PORT, () => {
         console.log(`     /api/kite/profile      User profile`);
     }
     console.log('');
+
+    // Keep-alive self-ping to prevent Render free tier spin-down
+    const RENDER_URL = process.env.RENDER_EXTERNAL_URL;
+    if (RENDER_URL) {
+        setInterval(() => {
+            https.get(RENDER_URL + '/api/health', () => {}).on('error', () => {});
+            console.log('  🏓 Keep-alive ping sent');
+        }, 14 * 60 * 1000); // every 14 minutes
+    }
 });
