@@ -1,4 +1,5 @@
 node_modules/
 server.log
 .env
+.claude/
 pre_usa_reconstructed/
