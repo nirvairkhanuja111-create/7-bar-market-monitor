@@ -171,14 +171,39 @@ function showShimmerLoading() {
 }
 
 async function loadAllData() {
-    // Fire all fetches in parallel
-    await Promise.all([
-        loadMarketData(),
-        loadStockColumns(),
-        fetchLiveNews(),
-        loadIndexKPIs(),
-        loadMBIData(),
-    ]);
+    try {
+        // Single combined fetch — 1 request instead of 7
+        const res = await fetch('/api/dashboard');
+        if (res.ok) {
+            const d = await res.json();
+            // Market data (advance/decline, sentiment, heatmap)
+            if (d.marketData) processMarketData(d.marketData);
+            // Index KPIs
+            if (d.indexQuotes && d.indexQuotes.indices) {
+                const idx = d.indexQuotes.indices;
+                renderIndexCard('kpi-nifty', idx.nifty);
+                renderIndexCard('kpi-banknifty', idx.banknifty);
+                renderIndexCard('kpi-smallcap', idx.smallcap);
+                renderIndexCard('kpi-gold', idx.gold);
+                renderIndexCard('kpi-usdinr', idx.usdinr);
+            }
+            // Stock columns
+            renderSevenBarList((d.sevenBar && d.sevenBar.stocks) || [], d.sevenBar?.source || 'live');
+            renderGainersList((d.gainers && d.gainers.stocks) || [], d.gainers?.source || 'live');
+            renderLosersList((d.losers && d.losers.stocks) || [], d.losers?.source || 'live');
+            // News
+            renderNewsList('marketNewsList', (d.news && d.news.items) || [], 'market');
+            renderNewsList('trumpNewsList', (d.trumpNews && d.trumpNews.items) || [], 'trump');
+        } else {
+            throw new Error('Dashboard fetch failed');
+        }
+    } catch (e) {
+        console.warn('Combined dashboard fetch failed, falling back to individual calls:', e.message);
+        await Promise.all([loadMarketData(), loadStockColumns(), fetchLiveNews(), loadIndexKPIs()]);
+    }
+
+    // MBI is separate (Google Sheets, can be slow)
+    loadMBIData();
 
     document.getElementById("lastUpdated").textContent = new Date().toLocaleTimeString("en-IN", {
         timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit", second: "2-digit"
@@ -186,8 +211,7 @@ async function loadAllData() {
 }
 
 // ===== MARKET DATA (Advance/Decline, Sentiment, Sector Heatmap) =====
-async function loadMarketData() {
-    const data = await fetchAPI('/api/market-data', fallbackMarketData);
+function processMarketData(data) {
     const source = data.source || 'live';
 
     // Advance / Decline
@@ -238,6 +262,11 @@ async function loadMarketData() {
     if (data.sectors && data.sectors.length > 0) {
         renderSectorHeatmap(data.sectors);
     }
+}
+
+async function loadMarketData() {
+    const data = await fetchAPI('/api/market-data', fallbackMarketData);
+    processMarketData(data);
 }
 
 // ===== INDEX KPI CARDS =====

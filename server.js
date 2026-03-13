@@ -2,6 +2,7 @@ const http = require('http');
 const https = require('https');
 const fs = require('fs');
 const path = require('path');
+const zlib = require('zlib');
 
 const KiteClient = require('./kite-client');
 
@@ -624,6 +625,49 @@ const server = http.createServer(async (req, res) => {
     const pathname = parsedUrl.pathname;
     res.setHeader('Access-Control-Allow-Origin', '*');
 
+    // ===== Combined Dashboard Endpoint (single request for all data) =====
+    if (pathname === '/api/dashboard') {
+        try {
+            const [marketData, gainers, losers, sevenBar, indexQuotes, news, trumpNews] = await Promise.allSettled([
+                getMarketData(),
+                getGainers(),
+                getLosers(),
+                getSevenBarStocks(),
+                (async () => {
+                    const { data, cached } = await getCachedNSE('allIndices', '/api/allIndices');
+                    const allIdx = data.data || [];
+                    const indices = {};
+                    for (const idx of allIdx) {
+                        if (idx.index === 'NIFTY 50') indices.nifty = { name: 'NIFTY 50', last: parseFloat(idx.last), change: parseFloat(idx.percentChange), pointChange: parseFloat(idx.previousClose) - parseFloat(idx.last) ? parseFloat((parseFloat(idx.last) - parseFloat(idx.previousClose)).toFixed(2)) : 0 };
+                        else if (idx.index === 'NIFTY BANK') indices.banknifty = { name: 'NIFTY BANK', last: parseFloat(idx.last), change: parseFloat(idx.percentChange), pointChange: parseFloat((parseFloat(idx.last) - parseFloat(idx.previousClose)).toFixed(2)) };
+                        else if (idx.index === 'NIFTY SMALLCAP 250') indices.smallcap = { name: 'NIFTY SMALLCAP 250', last: parseFloat(idx.last), change: parseFloat(idx.percentChange), pointChange: parseFloat((parseFloat(idx.last) - parseFloat(idx.previousClose)).toFixed(2)) };
+                    }
+                    try {
+                        const [goldData, usdinrData] = await Promise.all([fetchYahooQuote('GC=F'), fetchYahooQuote('USDINR=X')]);
+                        if (goldData && goldData.price) { const g = goldData.price - goldData.prevClose; indices.gold = { name: 'Gold $/oz', last: goldData.price, change: goldData.change, pointChange: parseFloat(g.toFixed(2)) }; }
+                        if (usdinrData && usdinrData.price) { const u = usdinrData.price - usdinrData.prevClose; indices.usdinr = { name: 'USD/INR', last: usdinrData.price, change: usdinrData.change, pointChange: parseFloat(u.toFixed(4)) }; }
+                    } catch (e) {}
+                    return { indices };
+                })(),
+                getMarketNews(),
+                getTrumpNews(),
+            ]);
+            sendJSON(res, 200, {
+                marketData: marketData.status === 'fulfilled' ? marketData.value : null,
+                gainers: gainers.status === 'fulfilled' ? gainers.value : { stocks: [] },
+                losers: losers.status === 'fulfilled' ? losers.value : { stocks: [] },
+                sevenBar: sevenBar.status === 'fulfilled' ? sevenBar.value : { stocks: [] },
+                indexQuotes: indexQuotes.status === 'fulfilled' ? indexQuotes.value : { indices: {} },
+                news: news.status === 'fulfilled' ? news.value : { items: [] },
+                trumpNews: trumpNews.status === 'fulfilled' ? trumpNews.value : { items: [] },
+                timestamp: new Date().toISOString(),
+            });
+        } catch (e) {
+            sendJSON(res, 200, { error: e.message });
+        }
+        return;
+    }
+
     // ===== NSE Market Data Endpoints =====
 
     if (pathname === '/api/market-data') {
@@ -1170,10 +1214,11 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
-    // ===== Static File Serving =====
+    // ===== Static File Serving (with gzip + cache headers) =====
     let filePath = path.join(ROOT, pathname === '/' ? 'index.html' : pathname.split('?')[0]);
     const ext = path.extname(filePath).toLowerCase();
     const contentType = MIME_TYPES[ext] || 'application/octet-stream';
+    const compressible = ['.html', '.css', '.js', '.json', '.svg', '.xml'].includes(ext);
 
     fs.readFile(filePath, (err, data) => {
         if (err) {
@@ -1181,8 +1226,20 @@ const server = http.createServer(async (req, res) => {
                 fs.readFile(path.join(ROOT, 'index.html'), (e2, d2) => { res.writeHead(200, { 'Content-Type': 'text/html' }); res.end(d2); });
             } else { res.writeHead(500); res.end('Server Error'); }
         } else {
-            res.writeHead(200, { 'Content-Type': contentType });
-            res.end(data);
+            const acceptGzip = (req.headers['accept-encoding'] || '').includes('gzip');
+            const headers = { 'Content-Type': contentType, 'Cache-Control': ext === '.html' ? 'no-cache' : 'public, max-age=3600' };
+            if (compressible && acceptGzip && data.length > 1024) {
+                zlib.gzip(data, (err2, compressed) => {
+                    if (err2) { res.writeHead(200, headers); res.end(data); return; }
+                    headers['Content-Encoding'] = 'gzip';
+                    headers['Vary'] = 'Accept-Encoding';
+                    res.writeHead(200, headers);
+                    res.end(compressed);
+                });
+            } else {
+                res.writeHead(200, headers);
+                res.end(data);
+            }
         }
     });
 });
@@ -1208,6 +1265,16 @@ server.listen(PORT, () => {
         console.log(`     /api/kite/profile      User profile`);
     }
     console.log('');
+
+    // Pre-warm NSE cache on startup so first visitor gets instant data
+    console.log('  ⏳ Pre-warming NSE cache...');
+    Promise.allSettled([
+        getCachedNSE('allIndices', '/api/allIndices'),
+        getCachedNSE('nifty500', '/api/equity-stockIndices?index=NIFTY%20500'),
+        getNiftyEMAStatus(),
+        fetchYahooQuote('GC=F'),
+        fetchYahooQuote('USDINR=X'),
+    ]).then(() => console.log('  ✅ Cache pre-warmed — ready for visitors'));
 
     // Keep-alive self-ping to prevent Render free tier spin-down
     const RENDER_URL = process.env.RENDER_EXTERNAL_URL;
