@@ -1723,7 +1723,8 @@ body {
     display: flex;
     gap: 0;
     padding: 0;
-    animation: scroll-ticker 60s linear infinite;
+    animation: scroll-ticker linear infinite;
+    animation-play-state: paused;
     height: 100%;
 }
 

@@ -483,6 +483,8 @@ function updateMarketStatus() {
 
 // ===== CNBC-STYLE MARQUEE TICKER (ALL Nifty 500) =====
 
+let tickerBuilt = false;
+
 async function refreshTicker() {
     const container = document.getElementById('kite-ticker');
     if (!container) return;
@@ -495,7 +497,27 @@ async function refreshTicker() {
 
         if (stocks.length === 0) throw new Error('No ticker data');
 
-        // Build ticker items HTML
+        // If ticker already built, just update prices in-place (don't rebuild DOM / reset animation)
+        if (tickerBuilt) {
+            const stockMap = {};
+            stocks.forEach(s => { stockMap[s.symbol] = s; });
+            container.querySelectorAll('.kite-ticker-item').forEach(item => {
+                const symEl = item.querySelector('.ticker-symbol');
+                if (!symEl) return;
+                const s = stockMap[symEl.textContent];
+                if (!s) return;
+                const change = parseFloat(s.change) || 0;
+                const cls = change >= 0 ? 'positive' : 'negative';
+                item.querySelector('.ticker-dot').className = 'ticker-dot ' + cls;
+                item.querySelector('.ticker-price').textContent = '\u20B9' + parseFloat(s.ltp).toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2});
+                const chEl = item.querySelector('.ticker-change');
+                chEl.className = 'ticker-change ' + cls;
+                chEl.textContent = (change >= 0 ? '+' : '') + change.toFixed(2) + '%';
+            });
+            return;
+        }
+
+        // First build: create DOM and start animation
         const buildItems = (list) => list.map(s => {
             const change = parseFloat(s.change) || 0;
             const cls = change >= 0 ? 'positive' : 'negative';
@@ -507,25 +529,28 @@ async function refreshTicker() {
             </div>`;
         }).join('');
 
-        // Double the items for seamless infinite scroll
         const itemsHtml = buildItems(stocks);
         container.innerHTML = `<div class="kite-ticker-strip">${itemsHtml}${itemsHtml}</div>`;
 
-        // Set animation duration based on stock count (more stocks = slower scroll)
         const strip = container.querySelector('.kite-ticker-strip');
         if (strip) {
-            const duration = Math.max(203, stocks.length * 1.775); // 30% slower again (cumulative 69% slower from base)
+            const duration = Math.max(203, stocks.length * 1.775);
             strip.style.animationDuration = duration + 's';
+            strip.offsetWidth; // force reflow
+            strip.style.animationPlayState = 'running';
         }
+        tickerBuilt = true;
     } catch (e) {
         console.warn('Ticker error:', e.message);
-        container.innerHTML = '<div class="ticker-error">Connecting to market data...</div>';
+        if (!tickerBuilt) {
+            container.innerHTML = '<div class="ticker-error">Connecting to market data...</div>';
+        }
     }
 }
 
 function initTicker() {
     refreshTicker();
-    setInterval(refreshTicker, 10000); // Refresh every 10s
+    setInterval(refreshTicker, 30000); // Update prices every 30s (no DOM rebuild)
 }
 
 // ===== ALL TRADINGVIEW WIDGETS =====
