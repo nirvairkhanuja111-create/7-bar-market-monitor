@@ -215,14 +215,14 @@ function processMarketData(data) {
     const source = data.source || 'live';
 
     // Advance / Decline
-    const total = data.advancing + data.declining;
-    document.getElementById("advCount").textContent = data.advancing;
-    document.getElementById("decCount").textContent = data.declining;
-    if (total > 0) {
-        document.getElementById("advBar").style.width = `${(data.advancing / total * 100).toFixed(1)}%`;
-        document.getElementById("decBar").style.width = `${(data.declining / total * 100).toFixed(1)}%`;
-    }
-    document.getElementById("advDecRatio").textContent = `Ratio: ${data.declining > 0 ? (data.advancing / data.declining).toFixed(2) : '--'} | Unch: ${data.unchanged || 0}`;
+    const adv = parseInt(data.advancing) || 0;
+    const dec = parseInt(data.declining) || 0;
+    const advEl = document.getElementById("advCount");
+    const decEl = document.getElementById("decCount");
+    const ratioEl = document.getElementById("advDecRatio");
+    if (advEl) advEl.textContent = adv;
+    if (decEl) decEl.textContent = dec;
+    if (ratioEl) ratioEl.textContent = `Ratio: ${dec > 0 ? (adv / dec).toFixed(2) : '--'} | Unch: ${data.unchanged || 0}`;
 
     // Update source badge
     updateSourceBadge('advDecSource', source);
@@ -232,6 +232,8 @@ function processMarketData(data) {
     const sentText = document.getElementById("sentimentText");
     const sentDetail = document.getElementById("sentimentDetail");
     const sentCard = document.getElementById("sentimentCard");
+    if (!sentIcon || !sentText || !sentDetail || !sentCard) return;
+
     const emaStatus = data.niftyEMAStatus || 'no';
     const niftyPrice = data.niftyLast ? `Nifty: ${data.niftyLast.toLocaleString('en-IN')}` : '';
     const e21 = data.ema21 ? `21 EMA: ${Math.round(data.ema21).toLocaleString('en-IN')}` : '';
