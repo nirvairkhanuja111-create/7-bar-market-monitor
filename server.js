@@ -1331,7 +1331,7 @@ const server = http.createServer(async (req, res) => {
 
             // 7. Stage Analysis (simplified)
             let stage = 'Unknown';
-            if (distFrom52WH <= 10 && aboveLow >= 50) stage = 'Stage 2 — Advancing (BUY zone)';
+            if (distFrom52WH <= 10 && aboveLow >= 50) stage = 'Stage 2 — Advancing';
             else if (distFrom52WH <= 25 && aboveLow >= 30) stage = 'Stage 2 — Early/Mid Advance';
             else if (distFrom52WH > 25 && distFrom52WH <= 50 && aboveLow >= 20) stage = 'Stage 1 — Basing (Watch for breakout)';
             else if (distFrom52WH > 50) stage = 'Stage 4 — Declining (AVOID)';
@@ -1343,15 +1343,15 @@ const server = http.createServer(async (req, res) => {
                 pass: isStage2,
                 value: stage,
                 detail: isStage2
-                    ? 'Stock is in the ideal buying stage per Stan Weinstein'
-                    : stage.includes('Stage 1') ? 'Building a base — not ready yet, add to watchlist' : 'Not in buying zone — Minervini only buys Stage 2 stocks',
+                    ? 'Stock is in the ideal stage per Stan Weinstein'
+                    : stage.includes('Stage 1') ? 'Building a base — not ready yet, add to watchlist' : 'Not in the right zone — Minervini only trades Stage 2 stocks',
                 weight: isStage2 ? 15 : (stage.includes('Stage 1') ? 5 : 0),
             });
             score += checks[checks.length - 1].weight;
 
             // Overall verdict
             let verdict, verdictClass;
-            if (score >= 70) { verdict = 'STRONG BUY CANDIDATE'; verdictClass = 'strong-buy'; }
+            if (score >= 70) { verdict = 'STRONG CANDIDATE'; verdictClass = 'strong-candidate'; }
             else if (score >= 50) { verdict = 'WATCHLIST — WAIT FOR SETUP'; verdictClass = 'watchlist'; }
             else if (score >= 30) { verdict = 'WEAK — NOT IDEAL FOR SWING'; verdictClass = 'weak'; }
             else { verdict = 'AVOID — DOES NOT MEET CRITERIA'; verdictClass = 'avoid'; }
