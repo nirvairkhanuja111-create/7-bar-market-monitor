@@ -164,8 +164,11 @@ const NIFTY_50_INSTRUMENT_TOKEN = 256265;
 
 // Fetch Nifty 50 daily close prices from our Market Breadth Google Sheet (no Yahoo dependency)
 async function fetchNiftyDailyCloses() {
-    const sheetUrl = 'https://docs.google.com/spreadsheets/d/1NVZd8aZbmKXhHYnfgfOLjlLiyoWfZnKy9v3MWT5jT68/gviz/tq?tqx=out:csv&gid=190844943';
-    const csv = await fetchUrl(sheetUrl);
+    const sheetUrl = 'https://docs.google.com/spreadsheets/d/1NVZd8aZbmKXhHYnfgfOLjlLiyoWfZnKy9v3MWT5jT68/export?format=csv&gid=190844943';
+    const csv = await fetchUrlWithHeaders(sheetUrl, {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/csv,text/plain,*/*',
+    });
     const lines = csv.trim().split('\n').filter(l => l.trim());
     const closes = [];
     // Skip header (row 0), data is newest-first
@@ -246,19 +249,30 @@ async function getNiftyEMAStatus() {
 // ===== UTILITY: Generic URL Fetcher =====
 
 function fetchUrl(targetUrl) {
+    return fetchUrlWithHeaders(targetUrl, { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' });
+}
+
+function fetchUrlWithHeaders(targetUrl, headers = {}, _redirects = 0) {
     return new Promise((resolve, reject) => {
+        if (_redirects > 5) return reject(new Error('Too many redirects'));
         const lib = targetUrl.startsWith('https') ? https : http;
-        const req = lib.get(targetUrl, { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' } }, (res) => {
+        const req = lib.get(targetUrl, { headers }, (res) => {
             if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-                fetchUrl(res.headers.location).then(resolve).catch(reject);
+                const next = res.headers.location.startsWith('http')
+                    ? res.headers.location
+                    : new URL(res.headers.location, targetUrl).href;
+                fetchUrlWithHeaders(next, headers, _redirects + 1).then(resolve).catch(reject);
                 return;
+            }
+            if (res.statusCode >= 400) {
+                return reject(new Error(`HTTP ${res.statusCode} from ${targetUrl}`));
             }
             let data = '';
             res.on('data', chunk => data += chunk);
             res.on('end', () => resolve(data));
         });
         req.on('error', reject);
-        req.setTimeout(10000, () => { req.destroy(); reject(new Error('Timeout')); });
+        req.setTimeout(12000, () => { req.destroy(); reject(new Error('Timeout')); });
     });
 }
 
@@ -1362,8 +1376,13 @@ const server = http.createServer(async (req, res) => {
     // ===== Market Breadth from Google Sheet =====
     if (pathname === '/api/mbi-data') {
         try {
-            const sheetUrl = 'https://docs.google.com/spreadsheets/d/1NVZd8aZbmKXhHYnfgfOLjlLiyoWfZnKy9v3MWT5jT68/gviz/tq?tqx=out:csv&gid=190844943';
-            const csv = await fetchUrl(sheetUrl);
+            // Use /export format — more reliable from cloud servers than gviz
+            const sheetUrl = 'https://docs.google.com/spreadsheets/d/1NVZd8aZbmKXhHYnfgfOLjlLiyoWfZnKy9v3MWT5jT68/export?format=csv&gid=190844943';
+            const csv = await fetchUrlWithHeaders(sheetUrl, {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/csv,text/plain,*/*',
+            });
+            console.log(`  📊 MBI CSV length: ${csv.length}, first 100: ${csv.substring(0, 100)}`);
             // Parse CSV — columns: Date, Day, Advances, Declines, Up4%, Down4%, Up25%M, Down25%M, Up50%M, Down50%M, %Above10DMA, %Above20DMA, %Above40DMA, %10>20DMA, %20>40DMA, Nifty, NiftyChg%
             const lines = csv.trim().split('\n').filter(l => l.trim());
             const rows = [];
