@@ -10,20 +10,30 @@ const PORT = process.env.PORT || 3000;
 const ROOT = __dirname;
 
 // ===== KITE CONNECT SETUP =====
+// Config: reads from environment variables (Render) or config.json (local dev)
 let config = {};
-try { config = JSON.parse(fs.readFileSync(path.join(__dirname, 'config.json'), 'utf8')); } catch (e) { console.log('⚠️  No config.json found, using defaults'); }
+try { config = JSON.parse(fs.readFileSync(path.join(__dirname, 'config.json'), 'utf8')); } catch (e) { console.log('⚠️  No config.json found, using env vars'); }
+
+// Environment variables override config.json
+const kiteConfig = {
+    enabled: process.env.KITE_ENABLED === 'true' || (config.kite && config.kite.enabled),
+    apiKey: process.env.KITE_API_KEY || config.kite?.apiKey || '',
+    apiSecret: process.env.KITE_API_SECRET || config.kite?.apiSecret || '',
+    redirectUrl: process.env.KITE_REDIRECT_URL || config.kite?.redirectUrl || 'http://localhost:3000/auth/kite/callback',
+    tokenFile: config.kite?.tokenFile || '.kite-token.json',
+};
 
 let kiteClient = null;
-if (config.kite && config.kite.enabled && config.kite.apiKey) {
-    kiteClient = new KiteClient(config.kite);
-    console.log(`  🔗 Kite Connect enabled (API Key: ${config.kite.apiKey.substring(0, 6)}...)`);
+if (kiteConfig.enabled && kiteConfig.apiKey) {
+    kiteClient = new KiteClient(kiteConfig);
+    console.log(`  🔗 Kite Connect enabled (API Key: ${kiteConfig.apiKey.substring(0, 6)}...)`);
     if (kiteClient.isAuthenticated()) {
         console.log('  ✅ Kite token found (valid for today)');
     } else {
         console.log('  ⚠️  Kite not authenticated — click "Login to Zerodha" on dashboard');
     }
 } else {
-    console.log('  ℹ️  Kite Connect disabled (set kite.enabled=true in config.json)');
+    console.log('  ℹ️  Kite Connect disabled (set KITE_ENABLED=true or kite.enabled=true in config.json)');
 }
 
 const MIME_TYPES = {
@@ -40,25 +50,103 @@ const MIME_TYPES = {
     '.woff2': 'font/woff2',
 };
 
-// ===== YAHOO FINANCE DATA LAYER =====
+// ===== COMMODITIES & FOREX DATA LAYER (replacing Yahoo Finance) =====
 
-function fetchYahooFinance(symbol, range = '3mo', interval = '1d') {
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=${interval}&range=${range}`;
-    return new Promise((resolve, reject) => {
-        https.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' } }, (res) => {
-            let data = '';
-            res.on('data', chunk => data += chunk);
-            res.on('end', () => {
-                try {
-                    const json = JSON.parse(data);
-                    const result = json.chart?.result?.[0];
-                    if (!result) { reject(new Error('No Yahoo data')); return; }
-                    resolve(result);
-                } catch (e) { reject(e); }
-            });
-        }).on('error', reject);
-    });
+let commodityCache = {};
+const COMMODITY_CACHE_TTL = 120000; // 2 min
+
+async function fetchGoldPrice() {
+    const now = Date.now();
+    if (commodityCache.gold && (now - commodityCache.gold.time) < COMMODITY_CACHE_TTL) return commodityCache.gold.data;
+
+    // Try Kite first (MCX Gold)
+    if (kiteClient?.isAuthenticated()) {
+        try {
+            const months = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
+            const d = new Date();
+            const yy = String(d.getFullYear()).slice(-2);
+            const sym = `MCX:GOLDM${yy}${months[d.getMonth()]}FUT`;
+            const quote = await kiteClient.getQuote([sym]);
+            if (quote && quote[sym]) {
+                const q = quote[sym];
+                const price = q.last_price;
+                const prevClose = q.ohlc?.close || price;
+                const change = prevClose ? ((price - prevClose) / prevClose * 100) : 0;
+                const data = { price, prevClose, change };
+                commodityCache.gold = { data, time: now };
+                return data;
+            }
+        } catch (e) { console.log('Kite gold fallback to API:', e.message); }
+    }
+
+    // Fallback: gold-api.com free API
+    try {
+        const raw = await fetchUrl('https://api.gold-api.com/price/XAU');
+        const json = JSON.parse(raw);
+        const price = json.price || 0;
+        // Store previous price for change calculation
+        const prevKey = 'gold_prev';
+        const prev = commodityCache[prevKey]?.price || price;
+        const change = prev ? ((price - prev) / prev * 100) : 0;
+        const data = { price, prevClose: prev, change };
+        commodityCache.gold = { data, time: now };
+        // Update prev price once per day
+        if (!commodityCache[prevKey] || new Date().getHours() === 0) {
+            commodityCache[prevKey] = { price };
+        }
+        return data;
+    } catch (e) {
+        console.error('Gold price error:', e.message);
+        return { price: 0, prevClose: 0, change: 0 };
+    }
 }
+
+async function fetchUSDINRRate() {
+    const now = Date.now();
+    if (commodityCache.usdinr && (now - commodityCache.usdinr.time) < COMMODITY_CACHE_TTL) return commodityCache.usdinr.data;
+
+    // Try Kite first (CDS USDINR futures)
+    if (kiteClient?.isAuthenticated()) {
+        try {
+            const months = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
+            const d = new Date();
+            const yy = String(d.getFullYear()).slice(-2);
+            const sym = `CDS:USDINR${yy}${months[d.getMonth()]}FUT`;
+            const quote = await kiteClient.getQuote([sym]);
+            if (quote && quote[sym]) {
+                const q = quote[sym];
+                const price = q.last_price;
+                const prevClose = q.ohlc?.close || price;
+                const change = prevClose ? ((price - prevClose) / prevClose * 100) : 0;
+                const data = { price, prevClose, change };
+                commodityCache.usdinr = { data, time: now };
+                return data;
+            }
+        } catch (e) { console.log('Kite USDINR fallback to API:', e.message); }
+    }
+
+    // Fallback: free exchange rate API
+    try {
+        const raw = await fetchUrl('https://open.er-api.com/v6/latest/USD');
+        const json = JSON.parse(raw);
+        const price = json.rates?.INR || 0;
+        // Store previous rate for change calculation
+        const prevKey = 'usdinr_prev';
+        const prev = commodityCache[prevKey]?.price || price;
+        const change = prev ? ((price - prev) / prev * 100) : 0;
+        const data = { price, prevClose: prev, change };
+        commodityCache.usdinr = { data, time: now };
+        if (!commodityCache[prevKey] || new Date().getHours() === 0) {
+            commodityCache[prevKey] = { price };
+        }
+        return data;
+    } catch (e) {
+        console.error('USDINR error:', e.message);
+        return { price: 0, prevClose: 0, change: 0 };
+    }
+}
+
+// ===== NIFTY EMA CALCULATION (using Kite historical or intraday estimate) =====
 
 function calculateEMA(closes, period) {
     if (closes.length < period) return null;
@@ -72,49 +160,52 @@ function calculateEMA(closes, period) {
 
 let emaCache = { data: null, time: 0 };
 const EMA_CACHE_TTL = 300000; // 5 min
+const NIFTY_50_INSTRUMENT_TOKEN = 256265;
 
 async function getNiftyEMAStatus() {
     const now = Date.now();
     if (emaCache.data && (now - emaCache.time) < EMA_CACHE_TTL) return emaCache.data;
-    try {
-        const result = await fetchYahooFinance('^NSEI', '3mo', '1d');
-        const closes = result.indicators?.quote?.[0]?.close?.filter(c => c != null) || [];
-        if (closes.length < 50) throw new Error('Not enough data');
-        const currentPrice = closes[closes.length - 1];
-        const ema21 = calculateEMA(closes, 21);
-        const ema50 = calculateEMA(closes, 50);
-        let status = 'no'; // below 50 EMA
-        if (currentPrice > ema50) status = 'selective'; // above 50 but below 21
-        if (currentPrice > ema21) status = 'yes'; // above 21 EMA
-        const data = { status, currentPrice, ema21, ema50 };
-        emaCache = { data, time: now };
-        return data;
-    } catch (e) {
-        console.error('Yahoo EMA error:', e.message);
-        return { status: 'no', currentPrice: 0, ema21: 0, ema50: 0 };
-    }
-}
 
-let yqCache = {};
-const YQ_CACHE_TTL = 120000; // 2 min
-
-async function fetchYahooQuote(symbol) {
-    const now = Date.now();
-    if (yqCache[symbol] && (now - yqCache[symbol].time) < YQ_CACHE_TTL) return yqCache[symbol].data;
-    try {
-        const result = await fetchYahooFinance(symbol, '2d', '1d');
-        const meta = result.meta || {};
-        const closes = result.indicators?.quote?.[0]?.close?.filter(c => c != null) || [];
-        const price = meta.regularMarketPrice || closes[closes.length - 1] || 0;
-        const prevClose = meta.chartPreviousClose || (closes.length >= 2 ? closes[closes.length - 2] : price);
-        const change = prevClose ? ((price - prevClose) / prevClose * 100) : 0;
-        const data = { price, prevClose, change };
-        yqCache[symbol] = { data, time: now };
-        return data;
-    } catch (e) {
-        console.error(`Yahoo quote error for ${symbol}:`, e.message);
-        return { price: 0, prevClose: 0, change: 0 };
+    // Try Kite historical data first
+    if (kiteClient?.isAuthenticated()) {
+        try {
+            const to = new Date().toISOString().split('T')[0];
+            const fromDate = new Date(Date.now() - 100 * 86400000).toISOString().split('T')[0];
+            const hist = await kiteClient.getHistoricalData(NIFTY_50_INSTRUMENT_TOKEN, 'day', fromDate, to);
+            if (hist && hist.candles && hist.candles.length >= 50) {
+                const closes = hist.candles.map(c => c[4]); // [timestamp, O, H, L, C, V]
+                const currentPrice = closes[closes.length - 1];
+                const ema21 = calculateEMA(closes, 21);
+                const ema50 = calculateEMA(closes, 50);
+                let status = 'no';
+                if (currentPrice > ema50) status = 'selective';
+                if (currentPrice > ema21) status = 'yes';
+                const data = { status, currentPrice, ema21, ema50 };
+                emaCache = { data, time: now };
+                return data;
+            }
+        } catch (e) { console.log('Kite EMA fallback:', e.message); }
     }
+
+    // Fallback: estimate from intraday data (if NSE data is available)
+    try {
+        const { data } = await getCachedNSE('allIndices', '/api/allIndices');
+        const nifty50 = data.data?.find(idx => idx.index === 'NIFTY 50');
+        if (nifty50) {
+            const niftyChange = parseFloat(nifty50.percentChange) || 0;
+            const niftyLast = parseFloat(nifty50.last) || 0;
+            const niftyOpen = parseFloat(nifty50.open) || 0;
+            // Simple heuristic: positive change + above open = bullish
+            let status = 'no';
+            if (niftyChange > 0 && niftyLast > niftyOpen) status = 'yes';
+            else if (niftyChange > -0.5) status = 'selective';
+            const data = { status, currentPrice: niftyLast, ema21: 0, ema50: 0 };
+            emaCache = { data, time: now };
+            return data;
+        }
+    } catch (e) { /* NSE also failed */ }
+
+    return { status: 'no', currentPrice: 0, ema21: 0, ema50: 0 };
 }
 
 // ===== UTILITY: Generic URL Fetcher =====
@@ -134,6 +225,173 @@ function fetchUrl(targetUrl) {
         req.on('error', reject);
         req.setTimeout(10000, () => { req.destroy(); reject(new Error('Timeout')); });
     });
+}
+
+// ===== NIFTY 500 SYMBOL LIST PERSISTENCE =====
+// Saves symbol list when NSE works (India), reads from file when NSE fails (Render)
+
+const NIFTY500_SYMBOLS_FILE = path.join(__dirname, 'nifty500-symbols.json');
+let nifty500SymbolList = [];
+
+function loadNifty500Symbols() {
+    try {
+        if (fs.existsSync(NIFTY500_SYMBOLS_FILE)) {
+            nifty500SymbolList = JSON.parse(fs.readFileSync(NIFTY500_SYMBOLS_FILE, 'utf8'));
+            console.log(`  📋 Loaded ${nifty500SymbolList.length} Nifty 500 symbols from cache`);
+        }
+    } catch (e) { console.log('  ⚠️  No cached Nifty 500 symbol list'); }
+}
+
+function saveNifty500Symbols(symbols) {
+    if (symbols.length < 400) return; // sanity check
+    nifty500SymbolList = symbols;
+    try {
+        fs.writeFileSync(NIFTY500_SYMBOLS_FILE, JSON.stringify(symbols));
+        console.log(`  💾 Saved ${symbols.length} Nifty 500 symbols`);
+    } catch (e) { /* might fail on read-only filesystem */ }
+}
+
+loadNifty500Symbols();
+
+// ===== KITE DATA FALLBACK LAYER =====
+// When NSE API fails (geo-blocked overseas), use Kite Connect as data source
+
+const KITE_INDEX_SYMBOLS = [
+    'NSE:NIFTY 50', 'NSE:NIFTY BANK', 'NSE:NIFTY SMLCAP 250',
+    'NSE:NIFTY IT', 'NSE:NIFTY PHARMA', 'NSE:NIFTY AUTO',
+    'NSE:NIFTY FMCG', 'NSE:NIFTY METAL', 'NSE:NIFTY REALTY',
+    'NSE:NIFTY ENERGY', 'NSE:NIFTY INFRA', 'NSE:NIFTY PSU BANK',
+    'NSE:NIFTY MEDIA', 'NSE:NIFTY FIN SERVICE', 'NSE:NIFTY HEALTHCARE',
+    'NSE:NIFTY CONSR DURBL', 'NSE:NIFTY OIL AND GAS',
+];
+
+const KITE_SECTOR_MAP = {
+    'NSE:NIFTY IT': { name: 'IT', fullName: 'Nifty IT' },
+    'NSE:NIFTY BANK': { name: 'Bank', fullName: 'Nifty Bank' },
+    'NSE:NIFTY PHARMA': { name: 'Pharma', fullName: 'Nifty Pharma' },
+    'NSE:NIFTY AUTO': { name: 'Auto', fullName: 'Nifty Auto' },
+    'NSE:NIFTY FMCG': { name: 'FMCG', fullName: 'Nifty FMCG' },
+    'NSE:NIFTY METAL': { name: 'Metal', fullName: 'Nifty Metal' },
+    'NSE:NIFTY REALTY': { name: 'Realty', fullName: 'Nifty Realty' },
+    'NSE:NIFTY ENERGY': { name: 'Energy', fullName: 'Nifty Energy' },
+    'NSE:NIFTY INFRA': { name: 'Infra', fullName: 'Nifty Infra' },
+    'NSE:NIFTY PSU BANK': { name: 'PSU Bank', fullName: 'Nifty PSU Bank' },
+    'NSE:NIFTY MEDIA': { name: 'Media', fullName: 'Nifty Media' },
+    'NSE:NIFTY FIN SERVICE': { name: 'FinServ', fullName: 'Nifty Financial Services' },
+    'NSE:NIFTY HEALTHCARE': { name: 'Healthcare', fullName: 'Nifty Healthcare' },
+    'NSE:NIFTY CONSR DURBL': { name: 'Consumer', fullName: 'Nifty Consumer Durables' },
+    'NSE:NIFTY OIL AND GAS': { name: 'Oil & Gas', fullName: 'Nifty Oil & Gas' },
+};
+
+let kiteDataCache = { allIndices: null, nifty500: null, time: 0 };
+const KITE_DATA_CACHE_TTL = 30000; // 30s
+
+async function fetchAllFromKite() {
+    const now = Date.now();
+    if (kiteDataCache.allIndices && (now - kiteDataCache.time) < KITE_DATA_CACHE_TTL) return kiteDataCache;
+    if (!kiteClient?.isAuthenticated()) return null;
+
+    try {
+        // Fetch index quotes
+        const indexQuotes = await kiteClient.getQuote(KITE_INDEX_SYMBOLS);
+        if (!indexQuotes) return null;
+
+        // Fetch Nifty 500 stock quotes (if we have the symbol list)
+        let stockQuotes = null;
+        if (nifty500SymbolList.length > 0) {
+            const kiteSymbols = nifty500SymbolList.map(s => `NSE:${s}`);
+            stockQuotes = await kiteClient.getQuoteBatched(kiteSymbols);
+        }
+
+        kiteDataCache = { allIndices: indexQuotes, nifty500: stockQuotes, time: now };
+        return kiteDataCache;
+    } catch (e) {
+        console.error('  ❌ Kite bulk fetch error:', e.message);
+        return null;
+    }
+}
+
+// Transform Kite index quotes into NSE allIndices format
+function kiteToNSEAllIndices(kiteIndices, kiteStocks) {
+    const result = [];
+    for (const [sym, q] of Object.entries(kiteIndices || {})) {
+        if (!q || !q.last_price) continue;
+        const prevClose = q.ohlc?.close || q.last_price;
+        const pctChange = prevClose ? ((q.last_price - prevClose) / prevClose * 100) : 0;
+
+        // Map Kite symbol to NSE index name
+        const indexName = sym.replace('NSE:', '');
+        let advances = 0, declines = 0, unchanged = 0;
+
+        // Compute advance/decline for NIFTY 500 from stock quotes
+        if (indexName === 'NIFTY 50' && kiteStocks) {
+            for (const [, sq] of Object.entries(kiteStocks)) {
+                if (!sq || !sq.last_price) continue;
+                const sPrev = sq.ohlc?.close || sq.last_price;
+                const sChg = sq.last_price - sPrev;
+                if (sChg > 0) advances++;
+                else if (sChg < 0) declines++;
+                else unchanged++;
+            }
+        }
+
+        result.push({
+            index: indexName,
+            last: String(q.last_price),
+            percentChange: String(pctChange.toFixed(2)),
+            open: String(q.ohlc?.open || 0),
+            previousClose: String(prevClose),
+            advances, declines, unchanged,
+        });
+    }
+
+    // Add NIFTY 500 entry with advance/decline totals
+    if (kiteStocks) {
+        let adv = 0, dec = 0, unch = 0;
+        for (const [, sq] of Object.entries(kiteStocks)) {
+            if (!sq || !sq.last_price) continue;
+            const sPrev = sq.ohlc?.close || sq.last_price;
+            const sChg = sq.last_price - sPrev;
+            if (sChg > 0) adv++;
+            else if (sChg < 0) dec++;
+            else unch++;
+        }
+        result.push({
+            index: 'NIFTY 500',
+            last: '0', percentChange: '0',
+            open: '0', previousClose: '0',
+            advances: adv, declines: dec, unchanged: unch,
+        });
+    }
+
+    return { data: result };
+}
+
+// Transform Kite stock quotes into NSE equity-stockIndices format
+function kiteToNSEStocks(kiteStocks) {
+    if (!kiteStocks) return { data: [] };
+    const stocks = [];
+    for (const [sym, q] of Object.entries(kiteStocks)) {
+        if (!q || !q.last_price) continue;
+        const symbol = sym.replace('NSE:', '');
+        const prevClose = q.ohlc?.close || q.last_price;
+        const pctChange = prevClose ? ((q.last_price - prevClose) / prevClose * 100) : 0;
+        stocks.push({
+            symbol,
+            lastPrice: String(q.last_price),
+            pChange: String(pctChange.toFixed(2)),
+            open: String(q.ohlc?.open || 0),
+            dayHigh: String(q.ohlc?.high || q.last_price),
+            dayLow: String(q.ohlc?.low || q.last_price),
+            previousClose: String(prevClose),
+            yearHigh: '0', // Not available from Kite quote
+            yearLow: '0',
+            totalTradedVolume: String(q.volume || 0),
+            totalTradedValue: '0',
+            meta: { companyName: '' },
+        });
+    }
+    return { data: [{ symbol: 'NIFTY 500', index: 'NIFTY 500' }, ...stocks] };
 }
 
 // ================================================================
@@ -267,9 +525,46 @@ async function getCachedNSE(key, apiPath) {
         return { data: nseCache[key].data, cached: true };
     }
 
-    const data = await fetchNSE(apiPath);
-    nseCache[key] = { data, timestamp: now };
-    return { data, cached: false };
+    try {
+        const data = await fetchNSE(apiPath);
+        nseCache[key] = { data, timestamp: now };
+
+        // Auto-save Nifty 500 symbol list when NSE works
+        if (key === 'nifty500' && data.data) {
+            const symbols = data.data
+                .filter(s => s.symbol && s.symbol !== 'NIFTY 500')
+                .map(s => s.symbol);
+            if (symbols.length > 400) saveNifty500Symbols(symbols);
+        }
+
+        return { data, cached: false };
+    } catch (nseError) {
+        // NSE failed — try Kite fallback
+        if (kiteClient?.isAuthenticated()) {
+            console.log(`  🔄 NSE failed for ${key}, trying Kite fallback...`);
+            try {
+                const kiteData = await fetchAllFromKite();
+                if (kiteData) {
+                    let data;
+                    if (key === 'allIndices') {
+                        data = kiteToNSEAllIndices(kiteData.allIndices, kiteData.nifty500);
+                    } else if (key === 'nifty500' || apiPath.includes('equity-stockIndices')) {
+                        data = kiteToNSEStocks(kiteData.nifty500);
+                    } else {
+                        throw nseError; // No Kite equivalent for this endpoint
+                    }
+                    if (data) {
+                        nseCache[key] = { data, timestamp: now };
+                        console.log(`  ✅ Kite fallback successful for ${key}`);
+                        return { data, cached: false };
+                    }
+                }
+            } catch (kiteError) {
+                console.error(`  ❌ Kite fallback also failed for ${key}:`, kiteError.message);
+            }
+        }
+        throw nseError;
+    }
 }
 
 // --- Sector index name mapping ---
@@ -520,7 +815,7 @@ function timeAgo(dateStr) {
     } catch { return ''; }
 }
 
-let newsCache = { market: null, trump: null, usa: null, marketTime: 0, trumpTime: 0, usaTime: 0 };
+let newsCache = { market: null, trump: null, marketTime: 0, trumpTime: 0 };
 const NEWS_CACHE_TTL = 180000;
 
 async function getMarketNews() {
@@ -539,38 +834,6 @@ async function getMarketNews() {
     unique.sort((a, b) => new Date(b.pubDate || 0) - new Date(a.pubDate || 0));
     const result = { items: unique.slice(0, 10) };
     newsCache.market = result; newsCache.marketTime = now;
-    return result;
-}
-
-async function getUSANews() {
-    const now = Date.now();
-    if (newsCache.usa && (now - newsCache.usaTime) < NEWS_CACHE_TTL) return newsCache.usa;
-    const feeds = [
-        'https://news.google.com/rss/search?q=US+stock+market+S%26P+500+nasdaq+today&hl=en&gl=US&ceid=US:en',
-        'https://news.google.com/rss/search?q=Federal+Reserve+Fed+rate+inflation+economy&hl=en&gl=US&ceid=US:en',
-    ];
-    let allItems = [];
-    for (const feedUrl of feeds) {
-        try {
-            const xml = await fetchUrl(feedUrl);
-            const items = parseRSSItems(xml);
-            items.forEach(item => {
-                const t = item.title.toLowerCase();
-                if (t.includes('fed') || t.includes('federal reserve') || t.includes('rate cut') || t.includes('rate hike')) item.tag = 'FED';
-                else if (t.includes('s&p') || t.includes('dow') || t.includes('nasdaq') || t.includes('russell')) item.tag = 'INDEX';
-                else if (t.includes('earnings') || t.includes('profit') || t.includes('revenue') || t.includes('eps')) item.tag = 'EARNINGS';
-                else if (t.includes('inflation') || t.includes('cpi') || t.includes('gdp') || t.includes('jobs')) item.tag = 'MACRO';
-                else if (t.includes('tech') || t.includes('ai') || t.includes('nvidia') || t.includes('apple')) item.tag = 'TECH';
-                else item.tag = 'US MARKETS';
-            });
-            allItems = allItems.concat(items);
-        } catch (e) { console.log('USA news feed error:', e.message); }
-    }
-    const seen = new Set();
-    const unique = allItems.filter(item => { const key = item.title.substring(0, 50).toLowerCase(); if (seen.has(key)) return false; seen.add(key); return true; });
-    unique.sort((a, b) => new Date(b.pubDate || 0) - new Date(a.pubDate || 0));
-    const result = { items: unique.slice(0, 10) };
-    newsCache.usa = result; newsCache.usaTime = now;
     return result;
 }
 
@@ -643,7 +906,7 @@ const server = http.createServer(async (req, res) => {
                         else if (idx.index === 'NIFTY SMALLCAP 250') indices.smallcap = { name: 'NIFTY SMALLCAP 250', last: parseFloat(idx.last), change: parseFloat(idx.percentChange), pointChange: parseFloat((parseFloat(idx.last) - parseFloat(idx.previousClose)).toFixed(2)) };
                     }
                     try {
-                        const [goldData, usdinrData] = await Promise.all([fetchYahooQuote('GC=F'), fetchYahooQuote('USDINR=X')]);
+                        const [goldData, usdinrData] = await Promise.all([fetchGoldPrice(), fetchUSDINRRate()]);
                         if (goldData && goldData.price) { const g = goldData.price - goldData.prevClose; indices.gold = { name: 'Gold $/oz', last: goldData.price, change: goldData.change, pointChange: parseFloat(g.toFixed(2)) }; }
                         if (usdinrData && usdinrData.price) { const u = usdinrData.price - usdinrData.prevClose; indices.usdinr = { name: 'USD/INR', last: usdinrData.price, change: usdinrData.change, pointChange: parseFloat(u.toFixed(4)) }; }
                     } catch (e) {}
@@ -752,11 +1015,11 @@ const server = http.createServer(async (req, res) => {
             if (bankRaw) indices.banknifty = makeEntry(bankRaw);
             if (smallRaw) indices.smallcap = makeEntry(smallRaw);
 
-            // Gold & USDINR from Yahoo Finance
+            // Gold & USDINR from Kite/free APIs
             try {
                 const [goldData, usdinrData] = await Promise.all([
-                    fetchYahooQuote('GC=F'),
-                    fetchYahooQuote('USDINR=X'),
+                    fetchGoldPrice(),
+                    fetchUSDINRRate(),
                 ]);
                 if (goldData && goldData.price) {
                     const gPtChg = goldData.price - goldData.prevClose;
@@ -850,8 +1113,9 @@ const server = http.createServer(async (req, res) => {
             const allStocks = n500Data.data || [];
             let stock = allStocks.find(s => s.symbol === symbol);
 
-            // If not in Nifty 500, fetch individual stock from NSE quote API
+            // If not in Nifty 500, fetch individual stock from NSE quote API or Kite
             if (!stock) {
+                // Try NSE first
                 try {
                     const quoteData = await fetchNSE(`/api/quote-equity?symbol=${encodeURIComponent(symbol)}`);
                     if (quoteData && quoteData.priceInfo) {
@@ -875,7 +1139,31 @@ const server = http.createServer(async (req, res) => {
                             },
                         };
                     }
-                } catch (e) { /* individual quote failed */ }
+                } catch (e) {
+                    // NSE failed — try Kite fallback
+                    if (kiteClient?.isAuthenticated()) {
+                        try {
+                            const kq = await kiteClient.getQuote([`NSE:${symbol}`]);
+                            const q = kq?.[`NSE:${symbol}`];
+                            if (q && q.last_price) {
+                                const prevClose = q.ohlc?.close || q.last_price;
+                                const pctChange = prevClose ? ((q.last_price - prevClose) / prevClose * 100) : 0;
+                                stock = {
+                                    symbol, lastPrice: String(q.last_price),
+                                    open: String(q.ohlc?.open || 0),
+                                    dayHigh: String(q.ohlc?.high || q.last_price),
+                                    dayLow: String(q.ohlc?.low || q.last_price),
+                                    previousClose: String(prevClose),
+                                    pChange: String(pctChange.toFixed(2)),
+                                    yearHigh: '0', yearLow: '0',
+                                    totalTradedVolume: String(q.volume || 0),
+                                    totalTradedValue: '0',
+                                    meta: { companyName: '', industry: '' },
+                                };
+                            }
+                        } catch (ke) { /* Kite also failed */ }
+                    }
+                }
             }
 
             if (!stock) {
@@ -1272,8 +1560,8 @@ server.listen(PORT, () => {
         getCachedNSE('allIndices', '/api/allIndices'),
         getCachedNSE('nifty500', '/api/equity-stockIndices?index=NIFTY%20500'),
         getNiftyEMAStatus(),
-        fetchYahooQuote('GC=F'),
-        fetchYahooQuote('USDINR=X'),
+        fetchGoldPrice(),
+        fetchUSDINRRate(),
     ]).then(() => console.log('  ✅ Cache pre-warmed — ready for visitors'));
 
     // Keep-alive self-ping to prevent Render free tier spin-down

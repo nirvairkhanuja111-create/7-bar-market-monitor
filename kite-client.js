@@ -153,14 +153,39 @@ class KiteClient {
     async getQuote(symbols) {
         // symbols: array like ["NSE:RELIANCE", "NSE:TCS"]
         if (!this.accessToken || !symbols.length) return null;
-        const query = symbols.map(s => `i=${s}`).join('&');
+        const query = symbols.map(s => `i=${encodeURIComponent(s)}`).join('&');
         return this.apiCall(`/quote?${query}`);
+    }
+
+    async getOHLC(symbols) {
+        if (!this.accessToken || !symbols.length) return null;
+        const query = symbols.map(s => `i=${encodeURIComponent(s)}`).join('&');
+        return this.apiCall(`/quote/ohlc?${query}`);
     }
 
     async getLTP(symbols) {
         if (!this.accessToken || !symbols.length) return null;
-        const query = symbols.map(s => `i=${s}`).join('&');
+        const query = symbols.map(s => `i=${encodeURIComponent(s)}`).join('&');
         return this.apiCall(`/quote/ltp?${query}`);
+    }
+
+    async getHistoricalData(instrumentToken, interval, from, to) {
+        // interval: 'day', 'minute', '5minute', '15minute', '60minute'
+        // from/to: 'YYYY-MM-DD' format
+        if (!this.accessToken) return null;
+        return this.apiCall(`/instruments/historical/${instrumentToken}/${interval}?from=${from}&to=${to}`);
+    }
+
+    // Bulk quote in batches (Kite may limit per-request count)
+    async getQuoteBatched(symbols, batchSize = 500) {
+        if (!this.accessToken || !symbols.length) return null;
+        const results = {};
+        for (let i = 0; i < symbols.length; i += batchSize) {
+            const batch = symbols.slice(i, i + batchSize);
+            const data = await this.getQuote(batch);
+            if (data) Object.assign(results, data);
+        }
+        return Object.keys(results).length > 0 ? results : null;
     }
 }
 
