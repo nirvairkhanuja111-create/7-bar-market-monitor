@@ -280,45 +280,32 @@ body {
     margin-top: 4px;
 }
 
-.adv-count {
+.adv-dec-nums {
+    display: flex;
+    align-items: baseline;
+    justify-content: center;
+    gap: 6px;
+    margin-top: 4px;
+}
+
+.adv-num {
     font-family: var(--font-mono);
-    font-size: 18px;
+    font-size: 22px;
     font-weight: 700;
     color: var(--green);
-    min-width: 30px;
-    text-align: center;
 }
 
-.dec-count {
+.dec-num {
     font-family: var(--font-mono);
-    font-size: 18px;
+    font-size: 22px;
     font-weight: 700;
     color: var(--red);
-    min-width: 30px;
-    text-align: center;
 }
 
-.adv-dec-bar {
-    flex: 1;
-    height: 8px;
-    border-radius: 4px;
-    display: flex;
-    overflow: hidden;
-    background: var(--bg-primary);
-}
-
-.adv-bar {
-    background: linear-gradient(90deg, var(--green-dim), var(--green));
-    height: 100%;
-    transition: width 0.8s ease;
-    border-radius: 4px 0 0 4px;
-}
-
-.dec-bar {
-    background: linear-gradient(90deg, var(--red), var(--red-dim));
-    height: 100%;
-    transition: width 0.8s ease;
-    border-radius: 0 4px 4px 0;
+.adv-dec-sep {
+    font-family: var(--font-mono);
+    font-size: 18px;
+    color: var(--text-muted);
 }
 
 .adv-dec-ratio {
