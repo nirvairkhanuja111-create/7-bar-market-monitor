@@ -146,7 +146,7 @@ async function fetchUSDINRRate() {
     }
 }
 
-// ===== NIFTY EMA CALCULATION (using Kite historical or intraday estimate) =====
+// ===== NIFTY EMA CALCULATION (real EMA from historical data) =====
 
 function calculateEMA(closes, period) {
     if (closes.length < period) return null;
@@ -162,50 +162,85 @@ let emaCache = { data: null, time: 0 };
 const EMA_CACHE_TTL = 300000; // 5 min
 const NIFTY_50_INSTRUMENT_TOKEN = 256265;
 
+// Fetch Nifty 50 daily close prices from our Market Breadth Google Sheet (no Yahoo dependency)
+async function fetchNiftyDailyCloses() {
+    const sheetUrl = 'https://docs.google.com/spreadsheets/d/1NVZd8aZbmKXhHYnfgfOLjlLiyoWfZnKy9v3MWT5jT68/gviz/tq?tqx=out:csv&gid=190844943';
+    const csv = await fetchUrl(sheetUrl);
+    const lines = csv.trim().split('\n').filter(l => l.trim());
+    const closes = [];
+    // Skip header (row 0), data is newest-first
+    for (let i = 1; i < lines.length; i++) {
+        const vals = lines[i].split(',').map(v => v.replace(/"/g, '').replace('%', '').trim());
+        const niftyClose = parseFloat(vals[15]); // Column 16 = Nifty close
+        if (!isNaN(niftyClose) && niftyClose > 0) closes.push(niftyClose);
+    }
+    // Reverse to chronological order (oldest first) for EMA calculation
+    closes.reverse();
+    if (closes.length >= 50) {
+        console.log(`  ✅ EMA: Got ${closes.length} daily closes from Google Sheet`);
+        return closes;
+    }
+    throw new Error(`Insufficient sheet data: only ${closes.length} closes`);
+}
+
 async function getNiftyEMAStatus() {
     const now = Date.now();
     if (emaCache.data && (now - emaCache.time) < EMA_CACHE_TTL) return emaCache.data;
 
-    // Try Kite historical data first
+    let closes = null;
+
+    // Method 1: Kite historical data (works when authenticated)
     if (kiteClient?.isAuthenticated()) {
         try {
             const to = new Date().toISOString().split('T')[0];
             const fromDate = new Date(Date.now() - 100 * 86400000).toISOString().split('T')[0];
             const hist = await kiteClient.getHistoricalData(NIFTY_50_INSTRUMENT_TOKEN, 'day', fromDate, to);
             if (hist && hist.candles && hist.candles.length >= 50) {
-                const closes = hist.candles.map(c => c[4]); // [timestamp, O, H, L, C, V]
-                const currentPrice = closes[closes.length - 1];
-                const ema21 = calculateEMA(closes, 21);
-                const ema50 = calculateEMA(closes, 50);
-                let status = 'no';
-                if (currentPrice > ema50) status = 'selective';
-                if (currentPrice > ema21) status = 'yes';
-                const data = { status, currentPrice, ema21, ema50 };
-                emaCache = { data, time: now };
-                return data;
+                closes = hist.candles.map(c => c[4]); // [timestamp, O, H, L, C, V]
+                console.log(`  ✅ EMA: Got ${closes.length} daily closes from Kite`);
             }
-        } catch (e) { console.log('Kite EMA fallback:', e.message); }
+        } catch (e) { console.log('  ⚠️  Kite EMA failed:', e.message); }
     }
 
-    // Fallback: estimate from intraday data (if NSE data is available)
+    // Method 2: Google Sheet daily closes (works globally, no auth needed)
+    if (!closes) {
+        try {
+            closes = await fetchNiftyDailyCloses();
+        } catch (e) { console.log('  ⚠️  Sheet EMA failed:', e.message); }
+    }
+
+    // Calculate EMAs from real data
+    if (closes && closes.length >= 50) {
+        const currentPrice = closes[closes.length - 1];
+        const ema21 = calculateEMA(closes, 21);
+        const ema50 = calculateEMA(closes, 50);
+
+        let status = 'no'; // Default: below 50 EMA
+        if (currentPrice > ema50) status = 'selective'; // Above 50 EMA but below 21
+        if (currentPrice > ema21) status = 'yes'; // Above 21 EMA
+
+        console.log(`  📊 EMA Status: Nifty=${currentPrice.toFixed(0)} | 21EMA=${ema21?.toFixed(0)} | 50EMA=${ema50?.toFixed(0)} → ${status}`);
+
+        const result = { status, currentPrice, ema21, ema50 };
+        emaCache = { data: result, time: now };
+        return result;
+    }
+
+    // Absolute last resort: get current price from NSE allIndices but mark EMA as unknown
     try {
         const { data } = await getCachedNSE('allIndices', '/api/allIndices');
         const nifty50 = data.data?.find(idx => idx.index === 'NIFTY 50');
         if (nifty50) {
-            const niftyChange = parseFloat(nifty50.percentChange) || 0;
             const niftyLast = parseFloat(nifty50.last) || 0;
-            const niftyOpen = parseFloat(nifty50.open) || 0;
-            // Simple heuristic: positive change + above open = bullish
-            let status = 'no';
-            if (niftyChange > 0 && niftyLast > niftyOpen) status = 'yes';
-            else if (niftyChange > -0.5) status = 'selective';
-            const data = { status, currentPrice: niftyLast, ema21: 0, ema50: 0 };
-            emaCache = { data, time: now };
-            return data;
+            console.log(`  ⚠️  EMA: No historical data available. Nifty=${niftyLast}. Defaulting to 'no' (cannot calculate EMAs)`);
+            const result = { status: 'no', currentPrice: niftyLast, ema21: 0, ema50: 0, noHistory: true };
+            emaCache = { data: result, time: now };
+            return result;
         }
     } catch (e) { /* NSE also failed */ }
 
-    return { status: 'no', currentPrice: 0, ema21: 0, ema50: 0 };
+    console.log('  ❌ EMA: All data sources failed');
+    return { status: 'no', currentPrice: 0, ema21: 0, ema50: 0, noHistory: true };
 }
 
 // ===== UTILITY: Generic URL Fetcher =====
@@ -1324,25 +1359,35 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
-    // ===== MBI (Market Breadth Index) from Google Sheet =====
+    // ===== Market Breadth from Google Sheet =====
     if (pathname === '/api/mbi-data') {
         try {
-            const sheetUrl = 'https://docs.google.com/spreadsheets/d/1SkXCX1Ax3n_EUsa06rzqWSdoCrlbGDENuFUOrMFyErw/gviz/tq?tqx=out:csv&sheet=MBI%20mini';
+            const sheetUrl = 'https://docs.google.com/spreadsheets/d/1NVZd8aZbmKXhHYnfgfOLjlLiyoWfZnKy9v3MWT5jT68/gviz/tq?tqx=out:csv&gid=190844943';
             const csv = await fetchUrl(sheetUrl);
-            // Parse CSV — columns: Date, EM, 52WL, 52WH, 4.5r, YEAR
+            // Parse CSV — columns: Date, Day, Advances, Declines, Up4%, Down4%, Up25%M, Down25%M, Up50%M, Down50%M, %Above10DMA, %Above20DMA, %Above40DMA, %10>20DMA, %20>40DMA, Nifty, NiftyChg%
             const lines = csv.trim().split('\n').filter(l => l.trim());
             const rows = [];
             for (let i = 1; i < lines.length; i++) {
-                const vals = lines[i].split(',').map(v => v.replace(/"/g, '').trim());
-                if (vals.length >= 6 && vals[0]) {
-                    const em = parseFloat(vals[1]);
+                const vals = lines[i].split(',').map(v => v.replace(/"/g, '').replace('%', '').trim());
+                if (vals.length >= 17 && vals[0]) {
                     rows.push({
                         date: vals[0],
-                        em: isNaN(em) ? 0 : em,
-                        wl52: parseFloat(vals[2]) || 0,
-                        wh52: parseFloat(vals[3]) || 0,
-                        r45: parseFloat(vals[4]) || 0,
-                        year: vals[5],
+                        day: vals[1],
+                        advances: parseInt(vals[2]) || 0,
+                        declines: parseInt(vals[3]) || 0,
+                        up4d: parseInt(vals[4]) || 0,
+                        down4d: parseInt(vals[5]) || 0,
+                        up25m: parseInt(vals[6]) || 0,
+                        down25m: parseInt(vals[7]) || 0,
+                        up50m: parseInt(vals[8]) || 0,
+                        down50m: parseInt(vals[9]) || 0,
+                        abv10dma: parseFloat(vals[10]) || 0,
+                        abv20dma: parseFloat(vals[11]) || 0,
+                        abv40dma: parseFloat(vals[12]) || 0,
+                        dma10gt20: parseFloat(vals[13]) || 0,
+                        dma20gt40: parseFloat(vals[14]) || 0,
+                        nifty: parseFloat(vals[15]) || 0,
+                        niftyChg: parseFloat(vals[16]) || 0,
                     });
                 }
             }

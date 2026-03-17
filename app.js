@@ -232,28 +232,29 @@ function processMarketData(data) {
     const sentText = document.getElementById("sentimentText");
     const sentDetail = document.getElementById("sentimentDetail");
     const sentCard = document.getElementById("sentimentCard");
-    const emaStatus = data.niftyEMAStatus || (data.niftyAbove21EMA ? 'yes' : 'no');
-    const e21 = data.ema21 ? `21 EMA: ${data.ema21.toLocaleString('en-IN')}` : '';
-    const e50 = data.ema50 ? `50 EMA: ${data.ema50.toLocaleString('en-IN')}` : '';
-    const emaLabel = [e21, e50].filter(Boolean).join(' | ');
+    const emaStatus = data.niftyEMAStatus || 'no';
+    const niftyPrice = data.niftyLast ? `Nifty: ${data.niftyLast.toLocaleString('en-IN')}` : '';
+    const e21 = data.ema21 ? `21 EMA: ${Math.round(data.ema21).toLocaleString('en-IN')}` : '';
+    const e50 = data.ema50 ? `50 EMA: ${Math.round(data.ema50).toLocaleString('en-IN')}` : '';
+    const emaLabel = [niftyPrice, e21, e50].filter(Boolean).join(' | ');
 
     if (emaStatus === 'yes') {
         sentIcon.className = "sentiment-icon bullish";
         sentText.textContent = "YES — ABOVE 21 EMA";
         sentText.className = "sentiment-text bullish";
-        sentDetail.textContent = `Nifty ABOVE 21 EMA | Breakouts favored${emaLabel ? ' | ' + emaLabel : ''}`;
+        sentDetail.textContent = `Breakouts favored${emaLabel ? ' | ' + emaLabel : ''}`;
         sentCard.style.borderColor = "rgba(0, 230, 118, 0.3)";
     } else if (emaStatus === 'selective') {
         sentIcon.className = "sentiment-icon selective";
         sentText.textContent = "SELECTIVE — ABOVE 50 EMA";
         sentText.className = "sentiment-text selective";
-        sentDetail.textContent = `Nifty below 21 EMA but above 50 EMA | Small positions only${emaLabel ? ' | ' + emaLabel : ''}`;
+        sentDetail.textContent = `Below 21 EMA but above 50 EMA | Small positions only${emaLabel ? ' | ' + emaLabel : ''}`;
         sentCard.style.borderColor = "rgba(255, 215, 64, 0.3)";
     } else {
         sentIcon.className = "sentiment-icon bearish";
         sentText.textContent = "NO — BELOW 50 EMA";
         sentText.className = "sentiment-text bearish";
-        sentDetail.textContent = `Nifty BELOW 50 EMA | Avoid breakout trades${emaLabel ? ' | ' + emaLabel : ''}`;
+        sentDetail.textContent = `Avoid breakout trades${emaLabel ? ' | ' + emaLabel : ''}`;
         sentCard.style.borderColor = "rgba(255, 82, 82, 0.3)";
     }
     updateSourceBadge('sentimentSource', source);
@@ -878,57 +879,84 @@ async function loadMBIData() {
 function renderMBITable(rows) {
     const wrapper = document.getElementById('mbiTableWrapper');
     if (!wrapper || !rows.length) {
-        if (wrapper) wrapper.innerHTML = '<div class="no-data">No MBI data</div>';
+        if (wrapper) wrapper.innerHTML = '<div class="no-data">No Market Breadth data</div>';
         return;
     }
 
     // Show first 15 rows (already newest-first from server)
     const display = rows.slice(0, 15);
-    const latestEM = display[0]?.em || 0;
+    const latest = display[0] || {};
 
-    // EM status bar
-    let emStatus = '', emClass = '';
-    if (latestEM >= 25) { emStatus = 'EXTREMELY STRONG'; emClass = 'mbi-em-cyan'; }
-    else if (latestEM >= 15) { emStatus = 'BULLISH — SWING'; emClass = 'mbi-em-green'; }
-    else if (latestEM >= 12) { emStatus = 'CAUTIOUS EXPOSURE'; emClass = 'mbi-em-yellow'; }
-    else if (latestEM >= 9.5) { emStatus = 'WEAK'; emClass = 'mbi-em-orange'; }
-    else { emStatus = 'AVOID LONGS'; emClass = 'mbi-em-red'; }
+    // Quick summary bar
+    const adRatio = latest.declines > 0 ? (latest.advances / latest.declines).toFixed(2) : '∞';
+    const adClass = latest.advances > latest.declines ? 'mbi-em-green' : 'mbi-em-red';
+    const niftyClass = latest.niftyChg >= 0 ? 'mbi-em-green' : 'mbi-em-red';
 
     let html = `
-        <div class="mbi-current">
-            <div class="mbi-em-label">CURRENT EM</div>
-            <div class="mbi-em-value ${emClass}">${latestEM.toFixed(1)}</div>
-            <div class="mbi-em-status ${emClass}">${emStatus}</div>
+        <div class="mbi-current" style="display:flex;gap:20px;flex-wrap:wrap;justify-content:center;margin-bottom:12px">
+            <div style="text-align:center">
+                <div class="mbi-em-label">NIFTY</div>
+                <div class="mbi-em-value ${niftyClass}" style="font-size:1.3em">${latest.nifty?.toLocaleString() || '--'}</div>
+                <div class="mbi-em-status ${niftyClass}">${latest.niftyChg >= 0 ? '+' : ''}${latest.niftyChg?.toFixed(2) || 0}%</div>
+            </div>
+            <div style="text-align:center">
+                <div class="mbi-em-label">A/D RATIO</div>
+                <div class="mbi-em-value ${adClass}" style="font-size:1.3em">${adRatio}</div>
+                <div class="mbi-em-status ${adClass}">${latest.advances} ▲ / ${latest.declines} ▼</div>
+            </div>
+            <div style="text-align:center">
+                <div class="mbi-em-label">% ABV 20 DMA</div>
+                <div class="mbi-em-value ${latest.abv20dma >= 50 ? 'mbi-em-green' : latest.abv20dma >= 30 ? 'mbi-em-yellow' : 'mbi-em-red'}" style="font-size:1.3em">${latest.abv20dma?.toFixed(1) || 0}%</div>
+                <div class="mbi-em-status" style="opacity:0.6">of stocks</div>
+            </div>
+            <div style="text-align:center">
+                <div class="mbi-em-label">% ABV 40 DMA</div>
+                <div class="mbi-em-value ${latest.abv40dma >= 50 ? 'mbi-em-green' : latest.abv40dma >= 30 ? 'mbi-em-yellow' : 'mbi-em-red'}" style="font-size:1.3em">${latest.abv40dma?.toFixed(1) || 0}%</div>
+                <div class="mbi-em-status" style="opacity:0.6">of stocks</div>
+            </div>
         </div>
         <div class="mbi-table-scroll">
         <table class="mbi-table">
             <thead>
                 <tr>
                     <th>Date</th>
-                    <th>EM</th>
-                    <th>52WL</th>
-                    <th>52WH</th>
-                    <th>4.5r</th>
-                    <th>Year</th>
+                    <th>Day</th>
+                    <th>Adv</th>
+                    <th>Dec</th>
+                    <th>Up 4%</th>
+                    <th>Dn 4%</th>
+                    <th>%&gt;10D</th>
+                    <th>%&gt;20D</th>
+                    <th>%&gt;40D</th>
+                    <th>Nifty</th>
+                    <th>Chg%</th>
                 </tr>
             </thead>
             <tbody>
     `;
 
     for (const r of display) {
+        // Color row based on Advance/Decline
         let rowClass = '';
-        if (r.em >= 25) rowClass = 'mbi-row-cyan';
-        else if (r.em >= 15) rowClass = 'mbi-row-green';
-        else if (r.em >= 12) rowClass = 'mbi-row-yellow';
-        else rowClass = 'mbi-row-red';
+        if (r.advances > r.declines * 1.5) rowClass = 'mbi-row-green';
+        else if (r.advances > r.declines) rowClass = 'mbi-row-yellow';
+        else if (r.declines > r.advances * 1.5) rowClass = 'mbi-row-red';
+        else rowClass = 'mbi-row-yellow';
+
+        const chgStr = (r.niftyChg >= 0 ? '+' : '') + r.niftyChg.toFixed(2) + '%';
 
         html += `<tr class="${rowClass}">
             <td>${r.date}</td>
-            <td class="mbi-em-cell">${r.em.toFixed(1)}</td>
-            <td>${r.wl52}</td>
-            <td>${r.wh52}</td>
-            <td>${r.r45}</td>
-            <td>${r.year}</td>
+            <td>${r.day?.substring(0,3) || ''}</td>
+            <td>${r.advances}</td>
+            <td>${r.declines}</td>
+            <td>${r.up4d}</td>
+            <td>${r.down4d}</td>
+            <td>${r.abv10dma.toFixed(1)}%</td>
+            <td>${r.abv20dma.toFixed(1)}%</td>
+            <td>${r.abv40dma.toFixed(1)}%</td>
+            <td>${r.nifty.toLocaleString()}</td>
+            <td style="color:${r.niftyChg >= 0 ? '#00e676' : '#ff5252'}">${chgStr}</td>
         </tr>`;
     }
 
