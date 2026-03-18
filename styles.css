@@ -1,3 +1,72 @@
+/* ===== AUTH MODAL ===== */
+.auth-overlay {
+    position: fixed; inset: 0; z-index: 9999;
+    background: rgba(10, 14, 23, 0.97);
+    backdrop-filter: blur(12px);
+    display: flex; align-items: center; justify-content: center;
+}
+.auth-card {
+    background: #111827;
+    border: 1px solid rgba(0, 230, 118, 0.2);
+    border-radius: 16px;
+    padding: 40px;
+    width: 100%; max-width: 420px;
+    box-shadow: 0 24px 80px rgba(0,0,0,0.6), 0 0 40px rgba(0,230,118,0.05);
+}
+.auth-logo {
+    display: flex; align-items: center; gap: 14px;
+    margin-bottom: 32px;
+}
+.auth-title {
+    font-size: 18px; font-weight: 800; letter-spacing: 2px;
+    color: #fff;
+}
+.auth-subtitle {
+    font-size: 11px; color: #4a5568; letter-spacing: 1px; margin-top: 2px;
+}
+.auth-desc {
+    color: #9ca3af; font-size: 14px; margin: 0 0 24px; line-height: 1.6;
+}
+.auth-desc strong { color: #00e676; }
+.auth-field { margin-bottom: 12px; }
+.auth-input {
+    width: 100%; box-sizing: border-box;
+    background: #0a0e17; border: 1px solid #2d3748;
+    color: #fff; border-radius: 8px;
+    padding: 14px 16px; font-size: 15px;
+    font-family: inherit; outline: none;
+    transition: border-color 0.2s;
+}
+.auth-input:focus { border-color: #00e676; }
+.otp-input {
+    text-align: center; letter-spacing: 8px;
+    font-size: 24px; font-weight: 700;
+    font-family: 'JetBrains Mono', monospace;
+}
+.auth-error {
+    color: #ff5252; font-size: 12px; min-height: 18px;
+    margin-bottom: 12px;
+}
+.auth-btn {
+    width: 100%; padding: 14px;
+    background: #00e676; color: #0a0e17;
+    border: none; border-radius: 8px;
+    font-size: 13px; font-weight: 800;
+    letter-spacing: 1.5px; cursor: pointer;
+    transition: opacity 0.2s, transform 0.1s;
+    font-family: inherit;
+}
+.auth-btn:hover { opacity: 0.9; }
+.auth-btn:active { transform: scale(0.98); }
+.auth-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.auth-back-btn {
+    display: block; width: 100%; margin-top: 12px;
+    background: none; border: none; color: #4a5568;
+    font-size: 12px; cursor: pointer; text-align: center;
+    font-family: inherit; transition: color 0.2s;
+}
+.auth-back-btn:hover { color: #9ca3af; }
+
 /* ===== ROOT VARIABLES ===== */
 :root {
     --bg-primary: #0a0e17;
