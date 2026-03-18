@@ -86,26 +86,59 @@ function postJson(targetUrl, body) {
 }
 
 // Fetch Gold + USDINR in one shot from TradingView scanner
+// Uses a shared in-flight promise so concurrent calls share one HTTP request
+let _tvInFlight = null;
+let _tvCacheTime = 0;
+const TV_CACHE_TTL = 90000; // 90s — slightly less than commodity TTL
+
 async function fetchFromTradingView() {
-    const raw = await postJson('https://scanner.tradingview.com/global/scan', {
-        symbols: { tickers: ['TVC:GOLD', 'FX_IDC:USDINR'] },
-        columns: ['close', 'change', 'change_abs']
-    });
-    const json = JSON.parse(raw);
-    const result = {};
-    for (const item of (json.data || [])) {
-        const [close, changePct, changeAbs] = item.d;
-        const prevClose = (close || 0) - (changeAbs || 0);
-        result[item.s] = { price: close, prevClose, change: changePct || 0 };
+    const now = Date.now();
+    // Return cached result if fresh
+    if (_tvInFlight === null && commodityCache._tv && (now - _tvCacheTime) < TV_CACHE_TTL) {
+        return commodityCache._tv;
     }
-    return result;
+    // If a request is already in flight, wait for it rather than firing another
+    if (_tvInFlight) return _tvInFlight;
+
+    _tvInFlight = (async () => {
+        try {
+            const raw = await postJson('https://scanner.tradingview.com/global/scan', {
+                symbols: { tickers: ['TVC:GOLD', 'FX_IDC:USDINR'] },
+                columns: ['close', 'change', 'change_abs', 'open', 'high', 'low']
+            });
+            const json = JSON.parse(raw);
+            const result = {};
+            for (const item of (json.data || [])) {
+                const [close, changePct, changeAbs] = item.d;
+                const prevClose = (close || 0) - (changeAbs || 0);
+                result[item.s] = { price: close, prevClose, change: changePct || 0 };
+            }
+            commodityCache._tv = result;
+            _tvCacheTime = Date.now();
+            return result;
+        } finally {
+            _tvInFlight = null;
+        }
+    })();
+
+    return _tvInFlight;
 }
 
 async function fetchGoldPrice() {
     const now = Date.now();
     if (commodityCache.gold && (now - commodityCache.gold.time) < COMMODITY_CACHE_TTL) return commodityCache.gold.data;
 
-    // 1. Kite Connect (MCX Gold — most accurate for INR price)
+    // 1. TradingView scanner (TVC:GOLD spot USD/oz) — primary, also populates USDINR cache
+    try {
+        const tv = await fetchFromTradingView();
+        if (tv['TVC:GOLD']?.price) {
+            commodityCache.gold = { data: tv['TVC:GOLD'], time: now };
+            if (tv['FX_IDC:USDINR']?.price) commodityCache.usdinr = { data: tv['FX_IDC:USDINR'], time: now };
+            return tv['TVC:GOLD'];
+        }
+    } catch (e) { console.log('TradingView gold fallback:', e.message); }
+
+    // 2. Kite Connect (MCX Gold — most accurate for INR price, requires auth)
     if (kiteClient?.isAuthenticated()) {
         try {
             const months = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
@@ -124,16 +157,6 @@ async function fetchGoldPrice() {
             }
         } catch (e) { console.log('Kite gold fallback:', e.message); }
     }
-
-    // 2. TradingView scanner (TVC:GOLD = spot USD/oz) — fetches USDINR at same time
-    try {
-        const tv = await fetchFromTradingView();
-        if (tv['TVC:GOLD']?.price) {
-            commodityCache.gold = { data: tv['TVC:GOLD'], time: now };
-            if (tv['FX_IDC:USDINR']?.price) commodityCache.usdinr = { data: tv['FX_IDC:USDINR'], time: now };
-            return tv['TVC:GOLD'];
-        }
-    } catch (e) { console.log('TradingView gold fallback:', e.message); }
 
     // 3. metals.live (free, no key required)
     try {
@@ -171,7 +194,17 @@ async function fetchUSDINRRate() {
     const now = Date.now();
     if (commodityCache.usdinr && (now - commodityCache.usdinr.time) < COMMODITY_CACHE_TTL) return commodityCache.usdinr.data;
 
-    // 1. Kite Connect (CDS USDINR futures — most accurate)
+    // 1. TradingView scanner (FX_IDC:USDINR) — primary, also populates Gold cache
+    try {
+        const tv = await fetchFromTradingView();
+        if (tv['FX_IDC:USDINR']?.price) {
+            commodityCache.usdinr = { data: tv['FX_IDC:USDINR'], time: now };
+            if (tv['TVC:GOLD']?.price) commodityCache.gold = { data: tv['TVC:GOLD'], time: now };
+            return tv['FX_IDC:USDINR'];
+        }
+    } catch (e) { console.log('TradingView USDINR fallback:', e.message); }
+
+    // 2. Kite Connect (CDS USDINR futures — most accurate, requires auth)
     if (kiteClient?.isAuthenticated()) {
         try {
             const months = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
@@ -190,16 +223,6 @@ async function fetchUSDINRRate() {
             }
         } catch (e) { console.log('Kite USDINR fallback:', e.message); }
     }
-
-    // 2. TradingView scanner (FX_IDC:USDINR) — also fetches Gold at same time
-    try {
-        const tv = await fetchFromTradingView();
-        if (tv['FX_IDC:USDINR']?.price) {
-            commodityCache.usdinr = { data: tv['FX_IDC:USDINR'], time: now };
-            if (tv['TVC:GOLD']?.price) commodityCache.gold = { data: tv['TVC:GOLD'], time: now };
-            return tv['FX_IDC:USDINR'];
-        }
-    } catch (e) { console.log('TradingView USDINR fallback:', e.message); }
 
     // 3. Frankfurter (ECB data — reliable, updates daily)
     try {
