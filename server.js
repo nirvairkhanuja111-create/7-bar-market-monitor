@@ -50,16 +50,62 @@ const MIME_TYPES = {
     '.woff2': 'font/woff2',
 };
 
-// ===== COMMODITIES & FOREX DATA LAYER (replacing Yahoo Finance) =====
+// ===== COMMODITIES & FOREX DATA LAYER =====
 
 let commodityCache = {};
 const COMMODITY_CACHE_TTL = 120000; // 2 min
+
+// POST helper for TradingView scanner API
+function postJson(targetUrl, body) {
+    return new Promise((resolve, reject) => {
+        const payload = JSON.stringify(body);
+        const urlObj = new URL(targetUrl);
+        const options = {
+            hostname: urlObj.hostname,
+            path: urlObj.pathname + urlObj.search,
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Content-Length': Buffer.byteLength(payload),
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Origin': 'https://www.tradingview.com',
+                'Referer': 'https://www.tradingview.com/'
+            }
+        };
+        const req = https.request(options, (res) => {
+            if (res.statusCode >= 400) return reject(new Error(`HTTP ${res.statusCode}`));
+            let data = '';
+            res.on('data', chunk => data += chunk);
+            res.on('end', () => resolve(data));
+        });
+        req.on('error', reject);
+        req.setTimeout(10000, () => { req.destroy(); reject(new Error('Timeout')); });
+        req.write(payload);
+        req.end();
+    });
+}
+
+// Fetch Gold + USDINR in one shot from TradingView scanner
+async function fetchFromTradingView() {
+    const raw = await postJson('https://scanner.tradingview.com/global/scan', {
+        symbols: { tickers: ['TVC:GOLD', 'FX_IDC:USDINR'] },
+        columns: ['close', 'change', 'change_abs']
+    });
+    const json = JSON.parse(raw);
+    const result = {};
+    for (const item of (json.data || [])) {
+        const [close, changePct, changeAbs] = item.d;
+        const prevClose = (close || 0) - (changeAbs || 0);
+        result[item.s] = { price: close, prevClose, change: changePct || 0 };
+    }
+    return result;
+}
 
 async function fetchGoldPrice() {
     const now = Date.now();
     if (commodityCache.gold && (now - commodityCache.gold.time) < COMMODITY_CACHE_TTL) return commodityCache.gold.data;
 
-    // Try Kite first (MCX Gold)
+    // 1. Kite Connect (MCX Gold — most accurate for INR price)
     if (kiteClient?.isAuthenticated()) {
         try {
             const months = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
@@ -76,27 +122,47 @@ async function fetchGoldPrice() {
                 commodityCache.gold = { data, time: now };
                 return data;
             }
-        } catch (e) { console.log('Kite gold fallback to API:', e.message); }
+        } catch (e) { console.log('Kite gold fallback:', e.message); }
     }
 
-    // Fallback: gold-api.com free API
+    // 2. TradingView scanner (TVC:GOLD = spot USD/oz) — fetches USDINR at same time
+    try {
+        const tv = await fetchFromTradingView();
+        if (tv['TVC:GOLD']?.price) {
+            commodityCache.gold = { data: tv['TVC:GOLD'], time: now };
+            if (tv['FX_IDC:USDINR']?.price) commodityCache.usdinr = { data: tv['FX_IDC:USDINR'], time: now };
+            return tv['TVC:GOLD'];
+        }
+    } catch (e) { console.log('TradingView gold fallback:', e.message); }
+
+    // 3. metals.live (free, no key required)
+    try {
+        const raw = await fetchUrl('https://api.metals.live/v1/spot');
+        const arr = JSON.parse(raw);
+        const price = Array.isArray(arr) ? arr.find(x => x.gold)?.gold : arr.gold;
+        if (price) {
+            const prev = commodityCache['gold_prev']?.price || price;
+            const change = prev ? ((price - prev) / prev * 100) : 0;
+            const data = { price, prevClose: prev, change };
+            commodityCache.gold = { data, time: now };
+            if (!commodityCache['gold_prev']) commodityCache['gold_prev'] = { price };
+            return data;
+        }
+    } catch (e) { console.log('metals.live gold fallback:', e.message); }
+
+    // 4. gold-api.com (last resort)
     try {
         const raw = await fetchUrl('https://api.gold-api.com/price/XAU');
         const json = JSON.parse(raw);
         const price = json.price || 0;
-        // Store previous price for change calculation
-        const prevKey = 'gold_prev';
-        const prev = commodityCache[prevKey]?.price || price;
+        const prev = commodityCache['gold_prev']?.price || price;
         const change = prev ? ((price - prev) / prev * 100) : 0;
         const data = { price, prevClose: prev, change };
         commodityCache.gold = { data, time: now };
-        // Update prev price once per day
-        if (!commodityCache[prevKey] || new Date().getHours() === 0) {
-            commodityCache[prevKey] = { price };
-        }
+        if (!commodityCache['gold_prev']) commodityCache['gold_prev'] = { price };
         return data;
     } catch (e) {
-        console.error('Gold price error:', e.message);
+        console.error('Gold price error (all sources failed):', e.message);
         return { price: 0, prevClose: 0, change: 0 };
     }
 }
@@ -105,7 +171,7 @@ async function fetchUSDINRRate() {
     const now = Date.now();
     if (commodityCache.usdinr && (now - commodityCache.usdinr.time) < COMMODITY_CACHE_TTL) return commodityCache.usdinr.data;
 
-    // Try Kite first (CDS USDINR futures)
+    // 1. Kite Connect (CDS USDINR futures — most accurate)
     if (kiteClient?.isAuthenticated()) {
         try {
             const months = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
@@ -122,26 +188,45 @@ async function fetchUSDINRRate() {
                 commodityCache.usdinr = { data, time: now };
                 return data;
             }
-        } catch (e) { console.log('Kite USDINR fallback to API:', e.message); }
+        } catch (e) { console.log('Kite USDINR fallback:', e.message); }
     }
 
-    // Fallback: free exchange rate API
+    // 2. TradingView scanner (FX_IDC:USDINR) — also fetches Gold at same time
+    try {
+        const tv = await fetchFromTradingView();
+        if (tv['FX_IDC:USDINR']?.price) {
+            commodityCache.usdinr = { data: tv['FX_IDC:USDINR'], time: now };
+            if (tv['TVC:GOLD']?.price) commodityCache.gold = { data: tv['TVC:GOLD'], time: now };
+            return tv['FX_IDC:USDINR'];
+        }
+    } catch (e) { console.log('TradingView USDINR fallback:', e.message); }
+
+    // 3. Frankfurter (ECB data — reliable, updates daily)
+    try {
+        const raw = await fetchUrl('https://api.frankfurter.app/latest?from=USD&to=INR');
+        const json = JSON.parse(raw);
+        const price = json.rates?.INR || 0;
+        const prev = commodityCache['usdinr_prev']?.price || price;
+        const change = prev ? ((price - prev) / prev * 100) : 0;
+        const data = { price, prevClose: prev, change };
+        commodityCache.usdinr = { data, time: now };
+        if (!commodityCache['usdinr_prev']) commodityCache['usdinr_prev'] = { price };
+        return data;
+    } catch (e) { console.log('Frankfurter USDINR fallback:', e.message); }
+
+    // 4. open.er-api (last resort)
     try {
         const raw = await fetchUrl('https://open.er-api.com/v6/latest/USD');
         const json = JSON.parse(raw);
         const price = json.rates?.INR || 0;
-        // Store previous rate for change calculation
-        const prevKey = 'usdinr_prev';
-        const prev = commodityCache[prevKey]?.price || price;
+        const prev = commodityCache['usdinr_prev']?.price || price;
         const change = prev ? ((price - prev) / prev * 100) : 0;
         const data = { price, prevClose: prev, change };
         commodityCache.usdinr = { data, time: now };
-        if (!commodityCache[prevKey] || new Date().getHours() === 0) {
-            commodityCache[prevKey] = { price };
-        }
+        if (!commodityCache['usdinr_prev']) commodityCache['usdinr_prev'] = { price };
         return data;
     } catch (e) {
-        console.error('USDINR error:', e.message);
+        console.error('USDINR error (all sources failed):', e.message);
         return { price: 0, prevClose: 0, change: 0 };
     }
 }
@@ -1331,7 +1416,7 @@ const server = http.createServer(async (req, res) => {
 
             // 7. Stage Analysis (simplified)
             let stage = 'Unknown';
-            if (distFrom52WH <= 10 && aboveLow >= 50) stage = 'Stage 2 — Advancing (BUY zone)';
+            if (distFrom52WH <= 10 && aboveLow >= 50) stage = 'Stage 2 — Advancing';
             else if (distFrom52WH <= 25 && aboveLow >= 30) stage = 'Stage 2 — Early/Mid Advance';
             else if (distFrom52WH > 25 && distFrom52WH <= 50 && aboveLow >= 20) stage = 'Stage 1 — Basing (Watch for breakout)';
             else if (distFrom52WH > 50) stage = 'Stage 4 — Declining (AVOID)';
@@ -1343,15 +1428,15 @@ const server = http.createServer(async (req, res) => {
                 pass: isStage2,
                 value: stage,
                 detail: isStage2
-                    ? 'Stock is in the ideal buying stage per Stan Weinstein'
-                    : stage.includes('Stage 1') ? 'Building a base — not ready yet, add to watchlist' : 'Not in buying zone — Minervini only buys Stage 2 stocks',
+                    ? 'Stock is in the ideal stage per Stan Weinstein'
+                    : stage.includes('Stage 1') ? 'Building a base — not ready yet, add to watchlist' : 'Not in the right zone — Minervini only trades Stage 2 stocks',
                 weight: isStage2 ? 15 : (stage.includes('Stage 1') ? 5 : 0),
             });
             score += checks[checks.length - 1].weight;
 
             // Overall verdict
             let verdict, verdictClass;
-            if (score >= 70) { verdict = 'STRONG BUY CANDIDATE'; verdictClass = 'strong-buy'; }
+            if (score >= 70) { verdict = 'STRONG CANDIDATE'; verdictClass = 'strong-candidate'; }
             else if (score >= 50) { verdict = 'WATCHLIST — WAIT FOR SETUP'; verdictClass = 'watchlist'; }
             else if (score >= 30) { verdict = 'WEAK — NOT IDEAL FOR SWING'; verdictClass = 'weak'; }
             else { verdict = 'AVOID — DOES NOT MEET CRITERIA'; verdictClass = 'avoid'; }

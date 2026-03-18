@@ -818,7 +818,7 @@ body {
     border: 1px solid;
 }
 
-.analysis-verdict-bar.strong-buy {
+.analysis-verdict-bar.strong-candidate {
     background: rgba(0, 230, 118, 0.08);
     border-color: var(--green-border);
 }
@@ -848,7 +848,7 @@ body {
     flex-shrink: 0;
 }
 
-.strong-buy .score-circle { border-color: var(--green); }
+.strong-candidate .score-circle { border-color: var(--green); }
 .watchlist .score-circle { border-color: var(--gold); }
 .weak .score-circle { border-color: var(--orange); }
 .avoid .score-circle { border-color: var(--red); }
@@ -860,7 +860,7 @@ body {
     line-height: 1;
 }
 
-.strong-buy .score-num { color: var(--green); }
+.strong-candidate .score-num { color: var(--green); }
 .watchlist .score-num { color: var(--gold); }
 .weak .score-num { color: var(--orange); }
 .avoid .score-num { color: var(--red); }
@@ -877,7 +877,7 @@ body {
     letter-spacing: 1px;
 }
 
-.strong-buy .verdict-title { color: var(--green); }
+.strong-candidate .verdict-title { color: var(--green); }
 .watchlist .verdict-title { color: var(--gold); }
 .weak .verdict-title { color: var(--orange); }
 .avoid .verdict-title { color: var(--red); }
