@@ -3,6 +3,8 @@ const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
+const crypto = require('crypto');
+const nodemailer = require('nodemailer');
 
 const KiteClient = require('./kite-client');
 
@@ -36,6 +38,43 @@ if (kiteConfig.enabled && kiteConfig.apiKey) {
     console.log('  ℹ️  Kite Connect disabled (set KITE_ENABLED=true or kite.enabled=true in config.json)');
 }
 
+// ===== AUTH — OTP + SESSION =====
+const otpStore = new Map();     // email -> { otp, expiry, attempts }
+const sessionStore = new Map(); // token -> { email, expiry }
+
+const emailCfg = config.email || {};
+const emailTransporter = (emailCfg.user && emailCfg.pass)
+    ? nodemailer.createTransport({ service: emailCfg.service || 'gmail', auth: { user: emailCfg.user, pass: emailCfg.pass } })
+    : null;
+
+function generateOtp() { return String(Math.floor(100000 + Math.random() * 900000)); }
+function generateToken() { return crypto.randomBytes(32).toString('hex'); }
+
+async function sendOtpEmail(email, otp) {
+    if (!emailTransporter) {
+        // Dev mode — print to console
+        console.log(`\n  🔑 OTP for ${email}: ${otp}  (no email config — dev mode)\n`);
+        return;
+    }
+    await emailTransporter.sendMail({
+        from: `"Market Monitor" <${emailCfg.user}>`,
+        to: email,
+        subject: 'Your Market Monitor Access Code',
+        html: `
+            <div style="font-family:Inter,sans-serif;background:#0a0e1a;color:#e0e0e0;padding:40px;border-radius:12px;max-width:480px;margin:0 auto">
+                <h2 style="color:#00e676;margin:0 0 8px">Market Monitor</h2>
+                <p style="color:#888;margin:0 0 32px;font-size:13px">Indian Market Intelligence Dashboard</p>
+                <p style="margin:0 0 16px">Your one-time access code is:</p>
+                <div style="background:#141824;border:1px solid #00e676;border-radius:8px;padding:24px;text-align:center;letter-spacing:12px;font-size:36px;font-weight:700;color:#00e676;font-family:monospace">
+                    ${otp}
+                </div>
+                <p style="color:#888;font-size:12px;margin:24px 0 0">This code expires in 10 minutes. Do not share it with anyone.</p>
+            </div>
+        `
+    });
+}
+
+// ===== MIME TYPES =====
 const MIME_TYPES = {
     '.html': 'text/html',
     '.css': 'text/css',
@@ -1542,6 +1581,70 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
+    // ===== AUTH — Request OTP =====
+    if (pathname === '/auth/request-otp' && req.method === 'POST') {
+        let body = '';
+        req.on('data', d => body += d);
+        req.on('end', async () => {
+            try {
+                const { email } = JSON.parse(body);
+                if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+                    sendJSON(res, 400, { error: 'Invalid email address' }); return;
+                }
+                const existing = otpStore.get(email);
+                if (existing && existing.expiry > Date.now() && existing.attempts >= 5) {
+                    sendJSON(res, 429, { error: 'Too many attempts. Try again in 10 minutes.' }); return;
+                }
+                const otp = generateOtp();
+                otpStore.set(email, { otp, expiry: Date.now() + 10 * 60 * 1000, attempts: 0 });
+                await sendOtpEmail(email, otp);
+                sendJSON(res, 200, { success: true, message: 'Code sent to your email' });
+            } catch (e) {
+                console.error('OTP send error:', e.message);
+                sendJSON(res, 500, { error: 'Failed to send email. Check server email config.' });
+            }
+        });
+        return;
+    }
+
+    // ===== AUTH — Verify OTP =====
+    if (pathname === '/auth/verify-otp' && req.method === 'POST') {
+        let body = '';
+        req.on('data', d => body += d);
+        req.on('end', () => {
+            try {
+                const { email, otp } = JSON.parse(body);
+                const record = otpStore.get(email);
+                if (!record) { sendJSON(res, 401, { error: 'No code requested for this email' }); return; }
+                if (Date.now() > record.expiry) { otpStore.delete(email); sendJSON(res, 401, { error: 'Code expired. Request a new one.' }); return; }
+                record.attempts++;
+                if (record.otp !== String(otp).trim()) {
+                    sendJSON(res, 401, { error: `Incorrect code. ${5 - record.attempts} attempts left.` }); return;
+                }
+                otpStore.delete(email);
+                const token = generateToken();
+                sessionStore.set(token, { email, expiry: Date.now() + 24 * 60 * 60 * 1000 });
+                sendJSON(res, 200, { success: true, token, email });
+            } catch (e) {
+                sendJSON(res, 400, { error: 'Invalid request' });
+            }
+        });
+        return;
+    }
+
+    // ===== AUTH — Check Session =====
+    if (pathname === '/auth/check') {
+        const token = (req.headers['authorization'] || '').replace('Bearer ', '');
+        const session = sessionStore.get(token);
+        if (session && session.expiry > Date.now()) {
+            sendJSON(res, 200, { valid: true, email: session.email });
+        } else {
+            if (token) sessionStore.delete(token);
+            sendJSON(res, 401, { valid: false });
+        }
+        return;
+    }
+
     // ===== Kite Connect OAuth & API =====
 
     // Redirect to Zerodha login page
@@ -1687,7 +1790,7 @@ const server = http.createServer(async (req, res) => {
             } else { res.writeHead(500); res.end('Server Error'); }
         } else {
             const acceptGzip = (req.headers['accept-encoding'] || '').includes('gzip');
-            const headers = { 'Content-Type': contentType, 'Cache-Control': ext === '.html' ? 'no-cache' : 'public, max-age=3600' };
+            const headers = { 'Content-Type': contentType, 'Cache-Control': 'no-cache' };
             if (compressible && acceptGzip && data.length > 1024) {
                 zlib.gzip(data, (err2, compressed) => {
                     if (err2) { res.writeHead(200, headers); res.end(data); return; }
