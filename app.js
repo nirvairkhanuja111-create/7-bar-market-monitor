@@ -143,8 +143,140 @@ function shimmerRows(count = 5) {
     `).join('');
 }
 
+// ===== AUTH =====
+const EMAIL_REGEX = /^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$/;
+
+function isValidEmail(email) { return EMAIL_REGEX.test(email.trim()); }
+
+function initAuthEmailValidation() {
+    const input = document.getElementById('authEmail');
+    const btn = document.getElementById('authSendBtn');
+    const errEl = document.getElementById('authEmailError');
+    if (!input) return;
+
+    function validate() {
+        const val = input.value.trim();
+        if (!val) {
+            input.style.borderColor = '';
+            btn.disabled = true;
+            errEl.textContent = '';
+        } else if (isValidEmail(val)) {
+            input.style.borderColor = '#00e676';
+            btn.disabled = false;
+            errEl.textContent = '';
+        } else {
+            input.style.borderColor = '#ff5252';
+            btn.disabled = true;
+            errEl.textContent = 'Please enter a valid email address.';
+        }
+    }
+
+    input.addEventListener('input', validate);
+    input.addEventListener('blur', validate);
+    // Start with button disabled
+    btn.disabled = true;
+}
+
+async function authCheck() {
+    const token = localStorage.getItem('mm_token');
+    if (!token) return false;
+    try {
+        const r = await fetch('/auth/check', { headers: { 'Authorization': `Bearer ${token}` } });
+        const d = await r.json();
+        return d.valid === true;
+    } catch { return false; }
+}
+
+function authShowOverlay() {
+    document.getElementById('authOverlay').style.display = 'flex';
+    setTimeout(initAuthEmailValidation, 50);
+    setTimeout(() => document.getElementById('authEmail')?.focus(), 100);
+}
+function authHideOverlay() {
+    document.getElementById('authOverlay').style.display = 'none';
+}
+
+async function authRequestOtp() {
+    const email = document.getElementById('authEmail').value.trim();
+    const errEl = document.getElementById('authEmailError');
+    const btn = document.getElementById('authSendBtn');
+    const btnTxt = document.getElementById('authSendBtnText');
+    errEl.textContent = '';
+    if (!isValidEmail(email)) return;
+    btn.disabled = true; btnTxt.textContent = 'SENDING...';
+    try {
+        const r = await fetch('/auth/request-otp', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email })
+        });
+        const d = await r.json();
+        if (!r.ok) { errEl.textContent = d.error || 'Failed to send code.'; btn.disabled = false; btnTxt.textContent = 'SEND CODE'; return; }
+        document.getElementById('authEmailDisplay').textContent = email;
+        document.getElementById('authStepEmail').style.display = 'none';
+        document.getElementById('authStepOtp').style.display = 'block';
+        setTimeout(() => document.getElementById('authOtp').focus(), 100);
+    } catch { errEl.textContent = 'Network error. Please try again.'; }
+    btn.disabled = false; btnTxt.textContent = 'SEND CODE';
+}
+
+async function authVerifyOtp() {
+    const email = document.getElementById('authEmail').value.trim();
+    const otp = document.getElementById('authOtp').value.trim();
+    const errEl = document.getElementById('authOtpError');
+    const btn = document.getElementById('authVerifyBtn');
+    const btnTxt = document.getElementById('authVerifyBtnText');
+    errEl.textContent = '';
+    if (!otp || otp.length < 6) { errEl.textContent = 'Enter the 6-digit code.'; return; }
+    btn.disabled = true; btnTxt.textContent = 'VERIFYING...';
+    try {
+        const r = await fetch('/auth/verify-otp', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email, otp })
+        });
+        const d = await r.json();
+        if (!r.ok) { errEl.textContent = d.error || 'Incorrect code.'; btn.disabled = false; btnTxt.textContent = 'VERIFY & ENTER'; return; }
+        localStorage.setItem('mm_token', d.token);
+        authHideOverlay();
+    } catch { errEl.textContent = 'Network error. Please try again.'; }
+    btn.disabled = false; btnTxt.textContent = 'VERIFY & ENTER';
+}
+
+function authBackToEmail() {
+    document.getElementById('authStepOtp').style.display = 'none';
+    document.getElementById('authStepEmail').style.display = 'block';
+    document.getElementById('authOtp').value = '';
+    document.getElementById('authOtpError').textContent = '';
+}
+
+// Enter key support
+document.addEventListener('keydown', e => {
+    if (e.key === 'Enter') {
+        const overlay = document.getElementById('authOverlay');
+        if (!overlay || overlay.style.display === 'none') return;
+        if (document.getElementById('authStepOtp').style.display !== 'none') authVerifyOtp();
+        else authRequestOtp();
+    }
+});
+
 // ===== INIT =====
-document.addEventListener("DOMContentLoaded", () => {
+document.addEventListener("DOMContentLoaded", async () => {
+    // Auth gate — check session before showing dashboard
+    const valid = await authCheck();
+    if (!valid) {
+        authShowOverlay();
+        // Wait for auth before initialising dashboard
+        const waitForAuth = setInterval(() => {
+            if (document.getElementById('authOverlay').style.display === 'none') {
+                clearInterval(waitForAuth);
+                bootDashboard();
+            }
+        }, 300);
+        return;
+    }
+    bootDashboard();
+});
+
+function bootDashboard() {
     initQuotes();
     initClock();
     initMarketStatus();
@@ -161,7 +293,7 @@ document.addEventListener("DOMContentLoaded", () => {
     // Auto-refresh
     setInterval(loadAllData, 60000);
     setInterval(rotateQuote, 20000);
-});
+}
 
 function showShimmerLoading() {
     ['sevenBarList', 'gainersList', 'losersList'].forEach(id => {
