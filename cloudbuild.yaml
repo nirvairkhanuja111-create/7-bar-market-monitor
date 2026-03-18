@@ -1,0 +1,67 @@
+# cloudbuild.yaml — CI/CD pipeline for GCP Cloud Run (asia-south1 / Mumbai)
+# Triggered on push to main branch via Cloud Build GitHub trigger.
+#
+# Prerequisites (run once manually):
+#   gcloud projects create bar-monitor-prod
+#   gcloud services enable run.googleapis.com cloudbuild.googleapis.com \
+#     artifactregistry.googleapis.com secretmanager.googleapis.com
+#   gcloud artifacts repositories create bar-monitor \
+#     --repository-format=docker --location=asia-south1
+#   gcloud secrets create KITE_API_KEY --data-file=-   # pipe in the value
+#   gcloud secrets create KITE_API_SECRET --data-file=-
+#   # Grant Cloud Build SA: roles/run.admin + roles/iam.serviceAccountUser
+#   # Grant Cloud Run SA (default compute): roles/secretmanager.secretAccessor
+
+substitutions:
+  _REGION: asia-south1
+  _REPO: seven-bar-dashboard
+  _SERVICE: seven-bar-dashboard
+  # After first deploy, update this to your actual Cloud Run URL:
+  _KITE_REDIRECT_URL: https://YOUR_CLOUD_RUN_URL/auth/kite/callback
+
+steps:
+  # Build container image
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/app:$COMMIT_SHA
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/app:latest
+      - .
+
+  # Push all tags to Artifact Registry
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - --all-tags
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/app
+
+  # Deploy to Cloud Run
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - ${_SERVICE}
+      - --image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/app:$COMMIT_SHA
+      - --region=${_REGION}
+      - --platform=managed
+      - --allow-unauthenticated
+      - --memory=512Mi
+      - --cpu=1
+      - --min-instances=0
+      - --max-instances=5
+      - --concurrency=80
+      - --port=8080
+      - --set-env-vars=KITE_ENABLED=true
+      - --set-env-vars=KITE_REDIRECT_URL=${_KITE_REDIRECT_URL}
+      - --set-secrets=KITE_API_KEY=KITE_API_KEY:latest
+      - --set-secrets=KITE_API_SECRET=KITE_API_SECRET:latest
+
+images:
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/app:$COMMIT_SHA
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/app:latest
+
+options:
+  logging: CLOUD_LOGGING_ONLY
