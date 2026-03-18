@@ -42,10 +42,42 @@ if (kiteConfig.enabled && kiteConfig.apiKey) {
 const otpStore = new Map();     // email -> { otp, expiry, attempts }
 const sessionStore = new Map(); // token -> { email, expiry }
 
-const emailCfg = config.email || {};
+// Email config: env vars (production) override config.json (local dev)
+const emailCfg = {
+    service: process.env.EMAIL_SERVICE || config.email?.service || 'gmail',
+    user: process.env.EMAIL_USER || config.email?.user || '',
+    pass: process.env.EMAIL_PASS || config.email?.pass || '',
+};
 const emailTransporter = (emailCfg.user && emailCfg.pass)
-    ? nodemailer.createTransport({ service: emailCfg.service || 'gmail', auth: { user: emailCfg.user, pass: emailCfg.pass } })
+    ? nodemailer.createTransport({ service: emailCfg.service, auth: { user: emailCfg.user, pass: emailCfg.pass } })
     : null;
+
+// Admin email — the only email that can access /admin dashboard
+const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || config.adminEmail || '').toLowerCase().trim();
+
+// ===== EMAIL WHITELIST =====
+const WHITELIST_FILE = path.join(__dirname, 'authorized-emails.json');
+let emailWhitelist = new Set();
+
+function loadWhitelist() {
+    try {
+        const data = JSON.parse(fs.readFileSync(WHITELIST_FILE, 'utf8'));
+        emailWhitelist = new Set(data.map(e => e.toLowerCase().trim()).filter(Boolean));
+        console.log(`  ✅ Loaded ${emailWhitelist.size} authorized emails`);
+    } catch (e) {
+        console.error('  ❌ Failed to load authorized-emails.json:', e.message);
+        emailWhitelist = new Set();
+    }
+}
+
+function saveWhitelist() {
+    const sorted = [...emailWhitelist].sort();
+    fs.writeFileSync(WHITELIST_FILE, JSON.stringify(sorted, null, 2));
+}
+
+loadWhitelist();
+// Also add admin email to whitelist so admin can use the main site too
+if (ADMIN_EMAIL) emailWhitelist.add(ADMIN_EMAIL);
 
 function generateOtp() { return String(Math.floor(100000 + Math.random() * 900000)); }
 function generateToken() { return crypto.randomBytes(32).toString('hex'); }
@@ -1591,13 +1623,17 @@ const server = http.createServer(async (req, res) => {
                 if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
                     sendJSON(res, 400, { error: 'Invalid email address' }); return;
                 }
-                const existing = otpStore.get(email);
+                const normalizedEmail = email.toLowerCase().trim();
+                if (!emailWhitelist.has(normalizedEmail)) {
+                    sendJSON(res, 403, { error: 'This email is not authorized to access Market Monitor. Contact support for access.' }); return;
+                }
+                const existing = otpStore.get(normalizedEmail);
                 if (existing && existing.expiry > Date.now() && existing.attempts >= 5) {
                     sendJSON(res, 429, { error: 'Too many attempts. Try again in 10 minutes.' }); return;
                 }
                 const otp = generateOtp();
-                otpStore.set(email, { otp, expiry: Date.now() + 10 * 60 * 1000, attempts: 0 });
-                await sendOtpEmail(email, otp);
+                otpStore.set(normalizedEmail, { otp, expiry: Date.now() + 10 * 60 * 1000, attempts: 0 });
+                await sendOtpEmail(normalizedEmail, otp);
                 sendJSON(res, 200, { success: true, message: 'Code sent to your email' });
             } catch (e) {
                 console.error('OTP send error:', e.message);
@@ -1642,6 +1678,106 @@ const server = http.createServer(async (req, res) => {
             if (token) sessionStore.delete(token);
             sendJSON(res, 401, { valid: false });
         }
+        return;
+    }
+
+    // ===== ADMIN — Email whitelist management =====
+    // Admin dashboard page
+    if (pathname === '/admin') {
+        const token = parsedUrl.searchParams.get('token') || '';
+        const session = sessionStore.get(token);
+        if (!session || session.expiry < Date.now() || session.email !== ADMIN_EMAIL) {
+            // Serve admin login page
+            try {
+                const html = fs.readFileSync(path.join(ROOT, 'admin.html'), 'utf8');
+                res.writeHead(200, { 'Content-Type': 'text/html', 'Cache-Control': 'no-cache' });
+                res.end(html);
+            } catch (e) {
+                sendJSON(res, 404, { error: 'Admin page not found' });
+            }
+            return;
+        }
+        // Authenticated admin — serve dashboard with token embedded
+        try {
+            let html = fs.readFileSync(path.join(ROOT, 'admin.html'), 'utf8');
+            res.writeHead(200, { 'Content-Type': 'text/html', 'Cache-Control': 'no-cache' });
+            res.end(html);
+        } catch (e) {
+            sendJSON(res, 404, { error: 'Admin page not found' });
+        }
+        return;
+    }
+
+    // Admin API — check if session is admin
+    if (pathname.startsWith('/admin/api/')) {
+        const token = (req.headers['authorization'] || '').replace('Bearer ', '');
+        const session = sessionStore.get(token);
+        if (!session || session.expiry < Date.now() || session.email !== ADMIN_EMAIL) {
+            sendJSON(res, 401, { error: 'Unauthorized' });
+            return;
+        }
+
+        // GET /admin/api/emails — list all authorized emails
+        if (pathname === '/admin/api/emails' && req.method === 'GET') {
+            const search = parsedUrl.searchParams.get('q') || '';
+            let emails = [...emailWhitelist].sort();
+            if (search) {
+                const q = search.toLowerCase();
+                emails = emails.filter(e => e.includes(q));
+            }
+            sendJSON(res, 200, { total: emailWhitelist.size, filtered: emails.length, emails });
+            return;
+        }
+
+        // POST /admin/api/emails — add email
+        if (pathname === '/admin/api/emails' && req.method === 'POST') {
+            let body = '';
+            req.on('data', d => body += d);
+            req.on('end', () => {
+                try {
+                    const { email } = JSON.parse(body);
+                    const normalized = (email || '').toLowerCase().trim();
+                    if (!normalized || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) {
+                        sendJSON(res, 400, { error: 'Invalid email address' }); return;
+                    }
+                    if (emailWhitelist.has(normalized)) {
+                        sendJSON(res, 409, { error: 'Email already authorized' }); return;
+                    }
+                    emailWhitelist.add(normalized);
+                    saveWhitelist();
+                    sendJSON(res, 200, { success: true, email: normalized, total: emailWhitelist.size });
+                } catch (e) {
+                    sendJSON(res, 400, { error: 'Invalid request' });
+                }
+            });
+            return;
+        }
+
+        // DELETE /admin/api/emails — remove email
+        if (pathname === '/admin/api/emails' && req.method === 'DELETE') {
+            let body = '';
+            req.on('data', d => body += d);
+            req.on('end', () => {
+                try {
+                    const { email } = JSON.parse(body);
+                    const normalized = (email || '').toLowerCase().trim();
+                    if (normalized === ADMIN_EMAIL) {
+                        sendJSON(res, 400, { error: 'Cannot remove admin email' }); return;
+                    }
+                    if (!emailWhitelist.has(normalized)) {
+                        sendJSON(res, 404, { error: 'Email not found' }); return;
+                    }
+                    emailWhitelist.delete(normalized);
+                    saveWhitelist();
+                    sendJSON(res, 200, { success: true, removed: normalized, total: emailWhitelist.size });
+                } catch (e) {
+                    sendJSON(res, 400, { error: 'Invalid request' });
+                }
+            });
+            return;
+        }
+
+        sendJSON(res, 404, { error: 'Not found' });
         return;
     }
 

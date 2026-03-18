@@ -9,6 +9,9 @@
 #     --repository-format=docker --location=asia-south1
 #   gcloud secrets create KITE_API_KEY --data-file=-   # pipe in the value
 #   gcloud secrets create KITE_API_SECRET --data-file=-
+#   gcloud secrets create EMAIL_USER --data-file=-     # Gmail address for OTP emails
+#   gcloud secrets create EMAIL_PASS --data-file=-     # Gmail app password
+#   gcloud secrets create ADMIN_EMAIL --data-file=-    # Admin email for /admin dashboard
 #   # Grant Cloud Build SA: roles/run.admin + roles/iam.serviceAccountUser
 #   # Grant Cloud Run SA (default compute): roles/secretmanager.secretAccessor
 
@@ -58,6 +61,9 @@ steps:
       - --set-env-vars=KITE_REDIRECT_URL=${_KITE_REDIRECT_URL}
       - --set-secrets=KITE_API_KEY=KITE_API_KEY:latest
       - --set-secrets=KITE_API_SECRET=KITE_API_SECRET:latest
+      - --set-secrets=EMAIL_USER=EMAIL_USER:latest
+      - --set-secrets=EMAIL_PASS=EMAIL_PASS:latest
+      - --set-secrets=ADMIN_EMAIL=ADMIN_EMAIL:latest
 
 images:
   - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/app:$COMMIT_SHA

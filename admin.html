@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin - Market Monitor</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { background: #0a0e1a; color: #e0e0e0; font-family: 'Inter', -apple-system, sans-serif; min-height: 100vh; }
+
+        .container { max-width: 720px; margin: 0 auto; padding: 32px 20px; }
+
+        .header { display: flex; align-items: center; gap: 12px; margin-bottom: 32px; padding-bottom: 20px; border-bottom: 1px solid #1e2a3a; }
+        .header svg { flex-shrink: 0; }
+        .header-text h1 { font-size: 18px; font-weight: 700; color: #00e676; letter-spacing: 1px; }
+        .header-text p { font-size: 12px; color: #666; margin-top: 2px; }
+        .back-link { margin-left: auto; color: #666; text-decoration: none; font-size: 13px; }
+        .back-link:hover { color: #00e676; }
+
+        .auth-section { max-width: 400px; margin: 80px auto; text-align: center; }
+        .auth-section h2 { color: #00e676; font-size: 16px; margin-bottom: 8px; }
+        .auth-section p { color: #888; font-size: 13px; margin-bottom: 24px; }
+        .auth-row { display: flex; gap: 8px; margin-bottom: 12px; }
+        .auth-row input { flex: 1; background: #111827; border: 1px solid #2d3748; border-radius: 8px; padding: 12px 14px; color: #e0e0e0; font-size: 14px; outline: none; }
+        .auth-row input:focus { border-color: #00e676; }
+        .auth-row input.otp { text-align: center; letter-spacing: 6px; font-family: monospace; font-size: 20px; font-weight: 700; }
+        .btn { background: #00e676; color: #0a0e1a; border: none; border-radius: 8px; padding: 12px 20px; font-size: 13px; font-weight: 700; cursor: pointer; letter-spacing: 0.5px; white-space: nowrap; }
+        .btn:hover { background: #00c853; }
+        .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+        .btn-sm { padding: 8px 14px; font-size: 12px; }
+        .error-msg { color: #ff5252; font-size: 12px; min-height: 18px; margin-top: 4px; }
+
+        .dashboard { display: none; }
+        .stats { display: flex; gap: 16px; margin-bottom: 24px; }
+        .stat-card { background: #111827; border: 1px solid #1e2a3a; border-radius: 10px; padding: 16px 20px; flex: 1; }
+        .stat-card .label { font-size: 11px; color: #666; text-transform: uppercase; letter-spacing: 1px; }
+        .stat-card .value { font-size: 28px; font-weight: 700; color: #00e676; margin-top: 4px; }
+
+        .add-section { margin-bottom: 24px; }
+        .add-section h3 { font-size: 13px; color: #888; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px; }
+        .add-row { display: flex; gap: 8px; }
+        .add-row input { flex: 1; background: #111827; border: 1px solid #2d3748; border-radius: 8px; padding: 10px 14px; color: #e0e0e0; font-size: 14px; outline: none; }
+        .add-row input:focus { border-color: #00e676; }
+        .add-msg { font-size: 12px; min-height: 18px; margin-top: 6px; }
+        .add-msg.success { color: #00e676; }
+        .add-msg.error { color: #ff5252; }
+
+        .search-bar { margin-bottom: 16px; }
+        .search-bar input { width: 100%; background: #111827; border: 1px solid #1e2a3a; border-radius: 8px; padding: 10px 14px; color: #e0e0e0; font-size: 14px; outline: none; }
+        .search-bar input:focus { border-color: #00e676; }
+
+        .email-list { background: #111827; border: 1px solid #1e2a3a; border-radius: 10px; overflow: hidden; }
+        .email-item { display: flex; align-items: center; padding: 10px 16px; border-bottom: 1px solid #1e2a3a; font-size: 13px; font-family: monospace; }
+        .email-item:last-child { border-bottom: none; }
+        .email-item .email { flex: 1; color: #ccc; }
+        .email-item .admin-badge { background: #00e676; color: #0a0e1a; font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 4px; margin-left: 8px; font-family: sans-serif; }
+        .email-item .remove-btn { background: none; border: 1px solid #ff5252; color: #ff5252; border-radius: 6px; padding: 4px 10px; font-size: 11px; cursor: pointer; font-family: sans-serif; }
+        .email-item .remove-btn:hover { background: #ff5252; color: #fff; }
+        .empty-state { padding: 32px; text-align: center; color: #666; font-size: 13px; }
+        .list-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+        .list-header h3 { font-size: 13px; color: #888; text-transform: uppercase; letter-spacing: 0.5px; }
+        .list-header .count { font-size: 12px; color: #666; }
+        .pagination { display: flex; justify-content: center; gap: 8px; margin-top: 16px; }
+        .pagination button { background: #111827; border: 1px solid #2d3748; color: #888; border-radius: 6px; padding: 6px 12px; font-size: 12px; cursor: pointer; }
+        .pagination button:hover { border-color: #00e676; color: #00e676; }
+        .pagination button.active { background: #00e676; color: #0a0e1a; border-color: #00e676; }
+        .pagination button:disabled { opacity: 0.3; cursor: not-allowed; }
+        .logout-btn { background: none; border: 1px solid #666; color: #888; border-radius: 6px; padding: 6px 14px; font-size: 12px; cursor: pointer; }
+        .logout-btn:hover { border-color: #ff5252; color: #ff5252; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <svg viewBox="0 0 40 40" width="32" height="32">
+                <rect x="4" y="22" width="4" height="14" rx="1" fill="#00e676"/>
+                <rect x="10" y="16" width="4" height="20" rx="1" fill="#00e676"/>
+                <rect x="16" y="10" width="4" height="26" rx="1" fill="#00e676"/>
+                <rect x="22" y="6" width="4" height="30" rx="1" fill="#00e676"/>
+                <rect x="28" y="12" width="4" height="24" rx="1" fill="#00e676"/>
+                <rect x="34" y="18" width="4" height="18" rx="1" fill="#00e676"/>
+            </svg>
+            <div class="header-text">
+                <h1>ADMIN PANEL</h1>
+                <p>Market Monitor — Email Management</p>
+            </div>
+            <a href="/" class="back-link" id="dashLink" style="display:none;">Dashboard</a>
+            <button class="logout-btn" id="logoutBtn" style="display:none;" onclick="adminLogout()">Logout</button>
+        </div>
+
+        <div class="auth-section" id="loginSection">
+            <h2>Admin Access</h2>
+            <p>Enter the admin email to receive a login code.</p>
+            <div id="stepEmail">
+                <div class="auth-row">
+                    <input type="email" id="adminEmail" placeholder="admin@email.com" autocomplete="email" />
+                    <button class="btn" id="sendBtn" onclick="requestOtp()">SEND CODE</button>
+                </div>
+                <div class="error-msg" id="emailError"></div>
+            </div>
+            <div id="stepOtp" style="display:none;">
+                <p style="margin-bottom:16px;">Code sent to <strong id="emailDisplay"></strong></p>
+                <div class="auth-row">
+                    <input type="text" id="otpInput" class="otp" placeholder="000000" maxlength="6" inputmode="numeric" autocomplete="one-time-code" />
+                    <button class="btn" id="verifyBtn" onclick="verifyOtp()">VERIFY</button>
+                </div>
+                <div class="error-msg" id="otpError"></div>
+                <button style="background:none;border:none;color:#888;font-size:12px;margin-top:8px;cursor:pointer;text-decoration:underline;" onclick="backToEmail()">Use different email</button>
+            </div>
+        </div>
+
+        <div class="dashboard" id="dashboard">
+            <div class="stats">
+                <div class="stat-card">
+                    <div class="label">Authorized Emails</div>
+                    <div class="value" id="totalCount">0</div>
+                </div>
+                <div class="stat-card">
+                    <div class="label">Showing</div>
+                    <div class="value" id="filteredCount">0</div>
+                </div>
+            </div>
+            <div class="add-section">
+                <h3>Add Email</h3>
+                <div class="add-row">
+                    <input type="email" id="newEmail" placeholder="user@email.com" />
+                    <button class="btn btn-sm" onclick="addEmail()">ADD</button>
+                </div>
+                <div class="add-msg" id="addMsg"></div>
+            </div>
+            <div class="search-bar">
+                <input type="text" id="searchInput" placeholder="Search emails..." oninput="debouncedSearch()" />
+            </div>
+            <div class="list-header">
+                <h3>Authorized Emails</h3>
+                <span class="count" id="listCount"></span>
+            </div>
+            <div class="email-list" id="emailList">
+                <div class="empty-state">Loading...</div>
+            </div>
+            <div class="pagination" id="pagination"></div>
+        </div>
+    </div>
+
+    <script>
+        let adminToken = localStorage.getItem('mm_admin_token') || '';
+        let adminEmailAddr = '';
+        let allEmails = [];
+        let currentPage = 0;
+        const PAGE_SIZE = 50;
+        let searchTimeout = null;
+
+        function escHtml(s) {
+            const d = document.createElement('div');
+            d.textContent = s;
+            return d.textContent;
+        }
+
+        (async function init() {
+            if (adminToken) {
+                const ok = await checkAdmin();
+                if (ok) { showDashboard(); return; }
+            }
+            document.getElementById('loginSection').style.display = 'block';
+        })();
+
+        async function checkAdmin() {
+            try {
+                const r = await fetch('/auth/check', { headers: { 'Authorization': 'Bearer ' + adminToken } });
+                const d = await r.json();
+                if (d.valid) { adminEmailAddr = d.email; return true; }
+            } catch (e) {}
+            localStorage.removeItem('mm_admin_token');
+            adminToken = '';
+            return false;
+        }
+
+        async function requestOtp() {
+            const email = document.getElementById('adminEmail').value.trim();
+            const errEl = document.getElementById('emailError');
+            const btn = document.getElementById('sendBtn');
+            errEl.textContent = '';
+            if (!email) { errEl.textContent = 'Enter an email'; return; }
+            btn.disabled = true; btn.textContent = 'SENDING...';
+            try {
+                const r = await fetch('/auth/request-otp', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ email })
+                });
+                const d = await r.json();
+                if (!r.ok) { errEl.textContent = d.error; return; }
+                document.getElementById('stepEmail').style.display = 'none';
+                document.getElementById('stepOtp').style.display = 'block';
+                document.getElementById('emailDisplay').textContent = email;
+                document.getElementById('otpInput').focus();
+            } catch (e) {
+                errEl.textContent = 'Network error';
+            } finally {
+                btn.disabled = false; btn.textContent = 'SEND CODE';
+            }
+        }
+
+        async function verifyOtp() {
+            const email = document.getElementById('adminEmail').value.trim();
+            const otp = document.getElementById('otpInput').value.trim();
+            const errEl = document.getElementById('otpError');
+            const btn = document.getElementById('verifyBtn');
+            errEl.textContent = '';
+            if (!otp || otp.length !== 6) { errEl.textContent = 'Enter 6-digit code'; return; }
+            btn.disabled = true; btn.textContent = 'VERIFYING...';
+            try {
+                const r = await fetch('/auth/verify-otp', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ email, otp })
+                });
+                const d = await r.json();
+                if (!r.ok) { errEl.textContent = d.error; return; }
+                adminToken = d.token;
+                adminEmailAddr = d.email;
+                localStorage.setItem('mm_admin_token', adminToken);
+                const check = await fetch('/admin/api/emails', { headers: { 'Authorization': 'Bearer ' + adminToken } });
+                if (!check.ok) {
+                    errEl.textContent = 'This email does not have admin access.';
+                    localStorage.removeItem('mm_admin_token');
+                    adminToken = '';
+                    return;
+                }
+                showDashboard();
+            } catch (e) {
+                errEl.textContent = 'Network error';
+            } finally {
+                btn.disabled = false; btn.textContent = 'VERIFY';
+            }
+        }
+
+        function backToEmail() {
+            document.getElementById('stepOtp').style.display = 'none';
+            document.getElementById('stepEmail').style.display = 'block';
+            document.getElementById('otpInput').value = '';
+            document.getElementById('otpError').textContent = '';
+        }
+
+        function showDashboard() {
+            document.getElementById('loginSection').style.display = 'none';
+            document.getElementById('dashboard').style.display = 'block';
+            document.getElementById('dashLink').style.display = 'inline';
+            document.getElementById('logoutBtn').style.display = 'inline';
+            loadEmails();
+        }
+
+        function adminLogout() {
+            localStorage.removeItem('mm_admin_token');
+            adminToken = '';
+            location.reload();
+        }
+
+        async function loadEmails(query) {
+            const url = '/admin/api/emails' + (query ? '?q=' + encodeURIComponent(query) : '');
+            try {
+                const r = await fetch(url, { headers: { 'Authorization': 'Bearer ' + adminToken } });
+                const d = await r.json();
+                if (!r.ok) return;
+                allEmails = d.emails;
+                document.getElementById('totalCount').textContent = d.total;
+                document.getElementById('filteredCount').textContent = d.filtered;
+                currentPage = 0;
+                renderPage();
+            } catch (e) {}
+        }
+
+        function renderPage() {
+            const start = currentPage * PAGE_SIZE;
+            const pageEmails = allEmails.slice(start, start + PAGE_SIZE);
+            const totalPages = Math.ceil(allEmails.length / PAGE_SIZE);
+            const listEl = document.getElementById('emailList');
+            document.getElementById('listCount').textContent = allEmails.length + ' email' + (allEmails.length !== 1 ? 's' : '');
+
+            // Build list using DOM methods to avoid XSS
+            listEl.replaceChildren();
+            if (pageEmails.length === 0) {
+                const empty = document.createElement('div');
+                empty.className = 'empty-state';
+                empty.textContent = 'No emails found';
+                listEl.appendChild(empty);
+                document.getElementById('pagination').replaceChildren();
+                return;
+            }
+
+            pageEmails.forEach(function(email) {
+                const row = document.createElement('div');
+                row.className = 'email-item';
+                const span = document.createElement('span');
+                span.className = 'email';
+                span.textContent = email;
+                row.appendChild(span);
+
+                if (email === adminEmailAddr) {
+                    const badge = document.createElement('span');
+                    badge.className = 'admin-badge';
+                    badge.textContent = 'ADMIN';
+                    row.appendChild(badge);
+                } else {
+                    const btn = document.createElement('button');
+                    btn.className = 'remove-btn';
+                    btn.textContent = 'Remove';
+                    btn.addEventListener('click', function() { removeEmail(email); });
+                    row.appendChild(btn);
+                }
+                listEl.appendChild(row);
+            });
+
+            // Pagination
+            const pagEl = document.getElementById('pagination');
+            pagEl.replaceChildren();
+            if (totalPages <= 1) return;
+
+            var prevBtn = document.createElement('button');
+            prevBtn.textContent = 'Prev';
+            prevBtn.disabled = currentPage === 0;
+            prevBtn.addEventListener('click', function() { currentPage--; renderPage(); });
+            pagEl.appendChild(prevBtn);
+
+            var info = document.createElement('button');
+            info.className = 'active';
+            info.disabled = true;
+            info.textContent = 'Page ' + (currentPage + 1) + ' / ' + totalPages;
+            pagEl.appendChild(info);
+
+            var nextBtn = document.createElement('button');
+            nextBtn.textContent = 'Next';
+            nextBtn.disabled = currentPage >= totalPages - 1;
+            nextBtn.addEventListener('click', function() { currentPage++; renderPage(); });
+            pagEl.appendChild(nextBtn);
+        }
+
+        async function addEmail() {
+            const input = document.getElementById('newEmail');
+            const msgEl = document.getElementById('addMsg');
+            const email = input.value.trim();
+            msgEl.className = 'add-msg'; msgEl.textContent = '';
+            if (!email) return;
+            try {
+                const r = await fetch('/admin/api/emails', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + adminToken },
+                    body: JSON.stringify({ email })
+                });
+                const d = await r.json();
+                if (!r.ok) { msgEl.className = 'add-msg error'; msgEl.textContent = d.error; return; }
+                msgEl.className = 'add-msg success'; msgEl.textContent = 'Added ' + d.email;
+                input.value = '';
+                loadEmails(document.getElementById('searchInput').value.trim());
+            } catch (e) {
+                msgEl.className = 'add-msg error'; msgEl.textContent = 'Network error';
+            }
+        }
+
+        async function removeEmail(email) {
+            if (!confirm('Remove ' + email + '?')) return;
+            try {
+                const r = await fetch('/admin/api/emails', {
+                    method: 'DELETE',
+                    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + adminToken },
+                    body: JSON.stringify({ email })
+                });
+                const d = await r.json();
+                if (!r.ok) { alert(d.error); return; }
+                loadEmails(document.getElementById('searchInput').value.trim());
+            } catch (e) { alert('Network error'); }
+        }
+
+        function debouncedSearch() {
+            clearTimeout(searchTimeout);
+            searchTimeout = setTimeout(function() {
+                loadEmails(document.getElementById('searchInput').value.trim());
+            }, 300);
+        }
+
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') {
+                if (document.activeElement.id === 'adminEmail') requestOtp();
+                if (document.activeElement.id === 'otpInput') verifyOtp();
+                if (document.activeElement.id === 'newEmail') addEmail();
+            }
+        });
+    </script>
+</body>
+</html>
