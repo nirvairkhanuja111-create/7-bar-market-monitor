@@ -1403,7 +1403,7 @@ const server = http.createServer(async (req, res) => {
                 pass: closeInUpperHalf,
                 value: bullishCandle ? `Bullish candle (O:₹${open.toLocaleString('en-IN')} → C:₹${ltp.toLocaleString('en-IN')})` : `Bearish candle (O:₹${open.toLocaleString('en-IN')} → C:₹${ltp.toLocaleString('en-IN')})`,
                 detail: closeInUpperHalf
-                    ? 'Closing in upper half of range — buyers in control'
+                    ? 'Closing in upper half of range — demand in control'
                     : 'Closing in lower half — sellers dominant today',
                 weight: closeInUpperHalf ? 10 : 0,
             });
