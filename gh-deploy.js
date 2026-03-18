@@ -17,7 +17,9 @@ const FILES_TO_DEPLOY = [
     'SUMMARY.md',
     'nifty500-symbols.json',
     'package.json',
-    'gh-deploy.js'
+    'gh-deploy.js',
+    'kill-ports.ps1',
+    'deploy.ps1'
 ];
 
 const commitMessage = process.argv[2] || `Update dashboard — ${new Date().toISOString().slice(0, 16).replace('T', ' ')}`;
