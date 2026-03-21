@@ -57,13 +57,16 @@ steps:
       - --max-instances=5
       - --concurrency=80
       - --port=8080
-      - --set-env-vars=KITE_ENABLED=true
+      - --set-env-vars=KITE_ENABLED=true,GCS_BUCKET=seven-bar-dashboard-data
       - --set-env-vars=KITE_REDIRECT_URL=${_KITE_REDIRECT_URL}
       - --set-secrets=KITE_API_KEY=KITE_API_KEY:latest
       - --set-secrets=KITE_API_SECRET=KITE_API_SECRET:latest
       - --set-secrets=EMAIL_USER=EMAIL_USER:latest
       - --set-secrets=EMAIL_PASS=EMAIL_PASS:latest
       - --set-secrets=ADMIN_EMAIL=ADMIN_EMAIL:latest
+      - --set-secrets=EMAIL_HOST=EMAIL_HOST:latest
+      - --set-secrets=EMAIL_PORT=EMAIL_PORT:latest
+      - --set-secrets=EMAIL_FROM=EMAIL_FROM:latest
 
 images:
   - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/app:$COMMIT_SHA

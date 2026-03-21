@@ -128,6 +128,36 @@
                 </div>
                 <div class="add-msg" id="addMsg"></div>
             </div>
+            <!-- Bulk CSV Upload/Remove -->
+            <div class="add-section" id="bulkSection">
+                <h3>Bulk Add / Remove (CSV)</h3>
+                <div style="display:flex;gap:8px;margin-bottom:8px;">
+                    <label style="display:flex;align-items:center;gap:4px;font-size:13px;cursor:pointer;">
+                        <input type="radio" name="bulkAction" value="add" checked onchange="resetBulk()"> Add
+                    </label>
+                    <label style="display:flex;align-items:center;gap:4px;font-size:13px;cursor:pointer;">
+                        <input type="radio" name="bulkAction" value="remove" onchange="resetBulk()"> Remove
+                    </label>
+                </div>
+                <div style="display:flex;gap:8px;align-items:center;">
+                    <input type="file" id="csvFile" accept=".csv,.txt" style="font-size:12px;color:#888;" onchange="handleCsvFile()" />
+                    <button class="btn btn-sm" id="bulkPreviewBtn" onclick="bulkPreview()" disabled>PREVIEW</button>
+                </div>
+                <div class="add-msg" id="bulkMsg"></div>
+
+                <!-- Preview panel (hidden until preview runs) -->
+                <div id="bulkPreview" style="display:none;margin-top:12px;">
+                    <div style="background:#111827;border:1px solid #1e2a3a;border-radius:10px;padding:16px;font-size:13px;">
+                        <div id="bulkSummary" style="margin-bottom:12px;"></div>
+                        <div id="bulkDetails" style="max-height:200px;overflow-y:auto;font-family:monospace;font-size:12px;color:#888;margin-bottom:12px;"></div>
+                        <div style="display:flex;gap:8px;">
+                            <button class="btn btn-sm" id="bulkConfirmBtn" onclick="bulkExecute()">CONFIRM</button>
+                            <button class="btn btn-sm" style="background:#2d3748;color:#ccc;" onclick="resetBulk()">CANCEL</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <div class="search-bar">
                 <input type="text" id="searchInput" placeholder="Search emails..." oninput="debouncedSearch()" />
             </div>
@@ -376,6 +406,183 @@
             searchTimeout = setTimeout(function() {
                 loadEmails(document.getElementById('searchInput').value.trim());
             }, 300);
+        }
+
+        // ===== BULK CSV OPERATIONS =====
+        let bulkCsvText = '';
+        let bulkPreviewData = null;
+
+        function getBulkAction() {
+            return document.querySelector('input[name="bulkAction"]:checked').value;
+        }
+
+        function handleCsvFile() {
+            const file = document.getElementById('csvFile').files[0];
+            const btn = document.getElementById('bulkPreviewBtn');
+            if (!file) { btn.disabled = true; bulkCsvText = ''; return; }
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                bulkCsvText = e.target.result;
+                btn.disabled = false;
+            };
+            reader.readAsText(file);
+        }
+
+        function resetBulk() {
+            document.getElementById('bulkPreview').style.display = 'none';
+            document.getElementById('bulkMsg').textContent = '';
+            document.getElementById('bulkMsg').className = 'add-msg';
+            bulkPreviewData = null;
+        }
+
+        async function bulkPreview() {
+            const msgEl = document.getElementById('bulkMsg');
+            const previewEl = document.getElementById('bulkPreview');
+            const summaryEl = document.getElementById('bulkSummary');
+            const detailsEl = document.getElementById('bulkDetails');
+            const btn = document.getElementById('bulkPreviewBtn');
+            msgEl.textContent = ''; msgEl.className = 'add-msg';
+
+            if (!bulkCsvText) { msgEl.textContent = 'Upload a CSV file first'; msgEl.className = 'add-msg error'; return; }
+
+            btn.disabled = true; btn.textContent = 'ANALYZING...';
+            try {
+                const r = await fetch('/admin/api/emails/bulk-preview', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + adminToken },
+                    body: JSON.stringify({ csv: bulkCsvText, action: getBulkAction() })
+                });
+                const d = await r.json();
+                if (!r.ok) { msgEl.textContent = d.error; msgEl.className = 'add-msg error'; return; }
+
+                bulkPreviewData = d;
+                previewEl.style.display = 'block';
+
+                // Build summary using DOM
+                summaryEl.replaceChildren();
+                if (d.action === 'add') {
+                    appendSummaryLine(summaryEl, d.to_add + ' new emails to add', '#00e676');
+                    appendSummaryLine(summaryEl, d.already_exists + ' already exist (will be skipped)', '#888');
+                    if (d.invalid > 0) appendSummaryLine(summaryEl, d.invalid + ' invalid (will be skipped)', '#ff5252');
+
+                    detailsEl.replaceChildren();
+                    if (d.preview_add.length > 0) {
+                        appendDetailHeader(detailsEl, 'Will add:');
+                        d.preview_add.forEach(function(e) { appendDetailLine(detailsEl, '+ ' + e, '#00e676'); });
+                    }
+                    if (d.preview_duplicate.length > 0) {
+                        appendDetailHeader(detailsEl, 'Already exist:');
+                        d.preview_duplicate.forEach(function(e) { appendDetailLine(detailsEl, '= ' + e, '#666'); });
+                    }
+                    if (d.preview_invalid.length > 0) {
+                        appendDetailHeader(detailsEl, 'Invalid:');
+                        d.preview_invalid.forEach(function(e) { appendDetailLine(detailsEl, '! ' + e, '#ff5252'); });
+                    }
+
+                    var confirmBtn = document.getElementById('bulkConfirmBtn');
+                    confirmBtn.textContent = 'CONFIRM ADD ' + d.to_add + ' EMAILS';
+                    confirmBtn.disabled = d.to_add === 0;
+                } else {
+                    appendSummaryLine(summaryEl, d.to_remove + ' emails to remove', '#ff5252');
+                    appendSummaryLine(summaryEl, d.not_found + ' not found (will be skipped)', '#888');
+                    if (d.protected > 0) appendSummaryLine(summaryEl, d.protected + ' protected admin email (cannot remove)', '#ffab00');
+                    if (d.invalid > 0) appendSummaryLine(summaryEl, d.invalid + ' invalid (will be skipped)', '#ff5252');
+
+                    detailsEl.replaceChildren();
+                    if (d.preview_remove.length > 0) {
+                        appendDetailHeader(detailsEl, 'Will remove:');
+                        d.preview_remove.forEach(function(e) { appendDetailLine(detailsEl, '- ' + e, '#ff5252'); });
+                    }
+                    if (d.preview_not_found.length > 0) {
+                        appendDetailHeader(detailsEl, 'Not found:');
+                        d.preview_not_found.forEach(function(e) { appendDetailLine(detailsEl, '? ' + e, '#666'); });
+                    }
+                    if (d.preview_protected.length > 0) {
+                        appendDetailHeader(detailsEl, 'Protected:');
+                        d.preview_protected.forEach(function(e) { appendDetailLine(detailsEl, '# ' + e, '#ffab00'); });
+                    }
+
+                    var confirmBtn = document.getElementById('bulkConfirmBtn');
+                    confirmBtn.textContent = 'CONFIRM REMOVE ' + d.to_remove + ' EMAILS';
+                    confirmBtn.style.background = d.to_remove > 0 ? '#ff5252' : '#2d3748';
+                    confirmBtn.disabled = d.to_remove === 0;
+                }
+            } catch (e) {
+                msgEl.textContent = 'Network error'; msgEl.className = 'add-msg error';
+            } finally {
+                btn.disabled = false; btn.textContent = 'PREVIEW';
+            }
+        }
+
+        function appendSummaryLine(parent, text, color) {
+            var div = document.createElement('div');
+            div.style.color = color;
+            div.style.marginBottom = '4px';
+            div.textContent = text;
+            parent.appendChild(div);
+        }
+
+        function appendDetailHeader(parent, text) {
+            var div = document.createElement('div');
+            div.style.color = '#ccc';
+            div.style.marginTop = '8px';
+            div.style.marginBottom = '4px';
+            div.style.fontWeight = '700';
+            div.style.fontFamily = 'sans-serif';
+            div.textContent = text;
+            parent.appendChild(div);
+        }
+
+        function appendDetailLine(parent, text, color) {
+            var div = document.createElement('div');
+            div.style.color = color;
+            div.textContent = text;
+            parent.appendChild(div);
+        }
+
+        async function bulkExecute() {
+            var action = getBulkAction();
+            var emails = action === 'add' ? bulkPreviewData.preview_add : bulkPreviewData.preview_remove;
+            var confirmBtn = document.getElementById('bulkConfirmBtn');
+            var msgEl = document.getElementById('bulkMsg');
+
+            if (!emails || emails.length === 0) return;
+
+            var confirmText = action === 'add'
+                ? 'Add ' + emails.length + ' emails to the whitelist?'
+                : 'Remove ' + emails.length + ' emails from the whitelist? This cannot be undone.';
+            if (!confirm(confirmText)) return;
+
+            confirmBtn.disabled = true;
+            confirmBtn.textContent = action === 'add' ? 'ADDING...' : 'REMOVING...';
+
+            try {
+                var r = await fetch('/admin/api/emails/bulk-execute', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + adminToken },
+                    body: JSON.stringify({ emails: emails, action: action })
+                });
+                var d = await r.json();
+                if (!r.ok) {
+                    msgEl.className = 'add-msg error';
+                    msgEl.textContent = d.error;
+                    return;
+                }
+                msgEl.className = 'add-msg success';
+                msgEl.textContent = 'Done! ' + d.applied + ' emails ' + (action === 'add' ? 'added' : 'removed') + '. Total: ' + d.total;
+                document.getElementById('bulkPreview').style.display = 'none';
+                document.getElementById('csvFile').value = '';
+                bulkCsvText = '';
+                bulkPreviewData = null;
+                document.getElementById('bulkPreviewBtn').disabled = true;
+                loadEmails(document.getElementById('searchInput').value.trim());
+            } catch (e) {
+                msgEl.className = 'add-msg error';
+                msgEl.textContent = 'Network error. Changes were rolled back. Please retry.';
+            } finally {
+                confirmBtn.disabled = false;
+                confirmBtn.textContent = 'CONFIRM';
+            }
         }
 
         document.addEventListener('keydown', function(e) {

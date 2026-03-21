@@ -5,6 +5,7 @@ const path = require('path');
 const zlib = require('zlib');
 const crypto = require('crypto');
 const nodemailer = require('nodemailer');
+const { Storage } = require('@google-cloud/storage');
 
 const KiteClient = require('./kite-client');
 
@@ -43,41 +44,94 @@ const otpStore = new Map();     // email -> { otp, expiry, attempts }
 const sessionStore = new Map(); // token -> { email, expiry }
 
 // Email config: env vars (production) override config.json (local dev)
+// Supports Gmail (EMAIL_SERVICE=gmail) and Resend (EMAIL_HOST=smtp.resend.com)
 const emailCfg = {
-    service: process.env.EMAIL_SERVICE || config.email?.service || 'gmail',
+    host: process.env.EMAIL_HOST || config.email?.host || '',
+    port: parseInt(process.env.EMAIL_PORT || config.email?.port || '0', 10),
+    service: process.env.EMAIL_SERVICE || config.email?.service || '',
     user: process.env.EMAIL_USER || config.email?.user || '',
     pass: process.env.EMAIL_PASS || config.email?.pass || '',
+    from: process.env.EMAIL_FROM || config.email?.from || '',
 };
-const emailTransporter = (emailCfg.user && emailCfg.pass)
-    ? nodemailer.createTransport({ service: emailCfg.service, auth: { user: emailCfg.user, pass: emailCfg.pass } })
-    : null;
+let emailTransporter = null;
+if (emailCfg.user && emailCfg.pass) {
+    if (emailCfg.host) {
+        // SMTP host mode (Resend, SES, etc.)
+        emailTransporter = nodemailer.createTransport({
+            host: emailCfg.host,
+            port: emailCfg.port || 465,
+            secure: (emailCfg.port || 465) === 465,
+            auth: { user: emailCfg.user, pass: emailCfg.pass },
+        });
+    } else {
+        // Gmail service mode (legacy)
+        emailTransporter = nodemailer.createTransport({
+            service: emailCfg.service || 'gmail',
+            auth: { user: emailCfg.user, pass: emailCfg.pass },
+        });
+    }
+}
 
 // Admin email — the only email that can access /admin dashboard
 const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || config.adminEmail || '').toLowerCase().trim();
 
-// ===== EMAIL WHITELIST =====
+// ===== EMAIL WHITELIST (GCS-backed in production, local file in dev) =====
 const WHITELIST_FILE = path.join(__dirname, 'authorized-emails.json');
+const GCS_BUCKET = process.env.GCS_BUCKET || '';
+const GCS_WHITELIST_KEY = 'authorized-emails.json';
 let emailWhitelist = new Set();
+let gcsWhitelistFile = null;
 
-function loadWhitelist() {
+if (GCS_BUCKET) {
     try {
-        const data = JSON.parse(fs.readFileSync(WHITELIST_FILE, 'utf8'));
-        emailWhitelist = new Set(data.map(e => e.toLowerCase().trim()).filter(Boolean));
-        console.log(`  ✅ Loaded ${emailWhitelist.size} authorized emails`);
+        const storage = new Storage();
+        gcsWhitelistFile = storage.bucket(GCS_BUCKET).file(GCS_WHITELIST_KEY);
+        console.log(`  ☁️  GCS whitelist: gs://${GCS_BUCKET}/${GCS_WHITELIST_KEY}`);
     } catch (e) {
-        console.error('  ❌ Failed to load authorized-emails.json:', e.message);
-        emailWhitelist = new Set();
+        console.error('  ❌ GCS init failed:', e.message, '— falling back to local file');
     }
 }
 
-function saveWhitelist() {
-    const sorted = [...emailWhitelist].sort();
-    fs.writeFileSync(WHITELIST_FILE, JSON.stringify(sorted, null, 2));
+async function loadWhitelist() {
+    try {
+        let data;
+        if (gcsWhitelistFile) {
+            const [contents] = await gcsWhitelistFile.download();
+            data = JSON.parse(contents.toString());
+            console.log(`  ✅ Loaded ${data.length} authorized emails from GCS`);
+        } else {
+            data = JSON.parse(fs.readFileSync(WHITELIST_FILE, 'utf8'));
+            console.log(`  ✅ Loaded ${data.length} authorized emails from local file`);
+        }
+        emailWhitelist = new Set(data.map(e => e.toLowerCase().trim()).filter(Boolean));
+    } catch (e) {
+        console.error('  ❌ Failed to load whitelist:', e.message);
+        // Try local file as fallback if GCS fails
+        try {
+            const data = JSON.parse(fs.readFileSync(WHITELIST_FILE, 'utf8'));
+            emailWhitelist = new Set(data.map(e => e.toLowerCase().trim()).filter(Boolean));
+            console.log(`  ⚠️  Fell back to local file (${emailWhitelist.size} emails)`);
+        } catch (e2) {
+            emailWhitelist = new Set();
+        }
+    }
 }
 
-loadWhitelist();
-// Also add admin email to whitelist so admin can use the main site too
-if (ADMIN_EMAIL) emailWhitelist.add(ADMIN_EMAIL);
+async function saveWhitelist() {
+    const sorted = [...emailWhitelist].sort();
+    const json = JSON.stringify(sorted, null, 2);
+    // Always save locally (backup + dev mode)
+    fs.writeFileSync(WHITELIST_FILE, json);
+    // Save to GCS if configured
+    if (gcsWhitelistFile) {
+        await gcsWhitelistFile.save(json, { contentType: 'application/json', resumable: false });
+    }
+}
+
+// Load whitelist at startup (async — server starts after this resolves)
+let whitelistReady = loadWhitelist().then(() => {
+    if (ADMIN_EMAIL) emailWhitelist.add(ADMIN_EMAIL);
+});
 
 function generateOtp() { return String(Math.floor(100000 + Math.random() * 900000)); }
 function generateToken() { return crypto.randomBytes(32).toString('hex'); }
@@ -89,7 +143,7 @@ async function sendOtpEmail(email, otp) {
         return;
     }
     await emailTransporter.sendMail({
-        from: `"Market Monitor" <${emailCfg.user}>`,
+        from: emailCfg.from || `"Market Monitor" <${emailCfg.user}>`,
         to: email,
         subject: 'Your Market Monitor Access Code',
         html: `
@@ -1733,7 +1787,7 @@ const server = http.createServer(async (req, res) => {
         if (pathname === '/admin/api/emails' && req.method === 'POST') {
             let body = '';
             req.on('data', d => body += d);
-            req.on('end', () => {
+            req.on('end', async () => {
                 try {
                     const { email } = JSON.parse(body);
                     const normalized = (email || '').toLowerCase().trim();
@@ -1744,7 +1798,7 @@ const server = http.createServer(async (req, res) => {
                         sendJSON(res, 409, { error: 'Email already authorized' }); return;
                     }
                     emailWhitelist.add(normalized);
-                    saveWhitelist();
+                    await saveWhitelist();
                     sendJSON(res, 200, { success: true, email: normalized, total: emailWhitelist.size });
                 } catch (e) {
                     sendJSON(res, 400, { error: 'Invalid request' });
@@ -1757,7 +1811,7 @@ const server = http.createServer(async (req, res) => {
         if (pathname === '/admin/api/emails' && req.method === 'DELETE') {
             let body = '';
             req.on('data', d => body += d);
-            req.on('end', () => {
+            req.on('end', async () => {
                 try {
                     const { email } = JSON.parse(body);
                     const normalized = (email || '').toLowerCase().trim();
@@ -1768,8 +1822,113 @@ const server = http.createServer(async (req, res) => {
                         sendJSON(res, 404, { error: 'Email not found' }); return;
                     }
                     emailWhitelist.delete(normalized);
-                    saveWhitelist();
+                    await saveWhitelist();
                     sendJSON(res, 200, { success: true, removed: normalized, total: emailWhitelist.size });
+                } catch (e) {
+                    sendJSON(res, 400, { error: 'Invalid request' });
+                }
+            });
+            return;
+        }
+
+        // POST /admin/api/emails/bulk-preview — parse CSV, return what would change
+        if (pathname === '/admin/api/emails/bulk-preview' && req.method === 'POST') {
+            let body = '';
+            req.on('data', d => body += d);
+            req.on('end', () => {
+                try {
+                    const { csv, action } = JSON.parse(body);
+                    if (!csv || !action || (action !== 'add' && action !== 'remove')) {
+                        sendJSON(res, 400, { error: 'Invalid request. Provide csv and action (add/remove).' }); return;
+                    }
+                    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+                    const lines = csv.split(/[\n\r]+/).map(l => l.trim().toLowerCase()).filter(Boolean);
+                    const parsed = [];
+                    const invalid = [];
+                    for (const line of lines) {
+                        const email = line.replace(/^["']|["']$/g, '').replace(/,+$/, '').trim();
+                        if (!email || email === 'email') continue;
+                        if (emailRegex.test(email)) parsed.push(email);
+                        else invalid.push(email);
+                    }
+                    const unique = [...new Set(parsed)];
+
+                    if (action === 'add') {
+                        const alreadyExists = unique.filter(e => emailWhitelist.has(e));
+                        const toAdd = unique.filter(e => !emailWhitelist.has(e));
+                        sendJSON(res, 200, {
+                            action: 'add',
+                            total_parsed: unique.length,
+                            to_add: toAdd.length,
+                            already_exists: alreadyExists.length,
+                            invalid: invalid.length,
+                            preview_add: toAdd,
+                            preview_duplicate: alreadyExists,
+                            preview_invalid: invalid,
+                        });
+                    } else {
+                        const toRemove = unique.filter(e => emailWhitelist.has(e) && e !== ADMIN_EMAIL);
+                        const notFound = unique.filter(e => !emailWhitelist.has(e));
+                        const protectedEmails = unique.filter(e => e === ADMIN_EMAIL);
+                        sendJSON(res, 200, {
+                            action: 'remove',
+                            total_parsed: unique.length,
+                            to_remove: toRemove.length,
+                            not_found: notFound.length,
+                            protected: protectedEmails.length,
+                            invalid: invalid.length,
+                            preview_remove: toRemove,
+                            preview_not_found: notFound,
+                            preview_protected: protectedEmails,
+                            preview_invalid: invalid,
+                        });
+                    }
+                } catch (e) {
+                    sendJSON(res, 400, { error: 'Failed to parse request' });
+                }
+            });
+            return;
+        }
+
+        // POST /admin/api/emails/bulk-execute — atomically apply bulk add/remove
+        if (pathname === '/admin/api/emails/bulk-execute' && req.method === 'POST') {
+            let body = '';
+            req.on('data', d => body += d);
+            req.on('end', async () => {
+                try {
+                    const { emails, action } = JSON.parse(body);
+                    if (!Array.isArray(emails) || !action || (action !== 'add' && action !== 'remove')) {
+                        sendJSON(res, 400, { error: 'Invalid request' }); return;
+                    }
+                    // Snapshot current state for rollback
+                    const snapshot = new Set(emailWhitelist);
+                    let applied = 0;
+                    try {
+                        if (action === 'add') {
+                            for (const email of emails) {
+                                const normalized = email.toLowerCase().trim();
+                                if (normalized && !emailWhitelist.has(normalized)) {
+                                    emailWhitelist.add(normalized);
+                                    applied++;
+                                }
+                            }
+                        } else {
+                            for (const email of emails) {
+                                const normalized = email.toLowerCase().trim();
+                                if (normalized && normalized !== ADMIN_EMAIL && emailWhitelist.has(normalized)) {
+                                    emailWhitelist.delete(normalized);
+                                    applied++;
+                                }
+                            }
+                        }
+                        await saveWhitelist();
+                        sendJSON(res, 200, { success: true, action, applied, total: emailWhitelist.size });
+                    } catch (writeErr) {
+                        // Rollback on save failure
+                        emailWhitelist = snapshot;
+                        try { await saveWhitelist(); } catch (e) { /* snapshot restore best-effort */ }
+                        sendJSON(res, 500, { error: 'Failed to save changes. Rolled back to previous state. Please retry.' });
+                    }
                 } catch (e) {
                     sendJSON(res, 400, { error: 'Invalid request' });
                 }
@@ -1943,6 +2102,8 @@ const server = http.createServer(async (req, res) => {
     });
 });
 
+// Wait for whitelist to load from GCS/file before accepting requests
+whitelistReady.then(() => {
 server.listen(PORT, () => {
     console.log(`\n  🟢  7 Bar Market Monitor v2.1 running at http://localhost:${PORT}`);
     console.log(`\n  📊 NSE Endpoints:`);
@@ -1984,3 +2145,4 @@ server.listen(PORT, () => {
         }, 14 * 60 * 1000); // every 14 minutes
     }
 });
+}); // end whitelistReady.then
