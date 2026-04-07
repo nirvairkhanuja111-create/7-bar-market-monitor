@@ -42,42 +42,10 @@ if (kiteConfig.enabled && kiteConfig.apiKey) {
 const otpStore = new Map();     // email -> { otp, expiry, attempts }
 const sessionStore = new Map(); // token -> { email, expiry }
 
-// Email config: env vars (production) override config.json (local dev)
-const emailCfg = {
-    service: process.env.EMAIL_SERVICE || config.email?.service || 'gmail',
-    user: process.env.EMAIL_USER || config.email?.user || '',
-    pass: process.env.EMAIL_PASS || config.email?.pass || '',
-};
+const emailCfg = config.email || {};
 const emailTransporter = (emailCfg.user && emailCfg.pass)
-    ? nodemailer.createTransport({ service: emailCfg.service, auth: { user: emailCfg.user, pass: emailCfg.pass } })
+    ? nodemailer.createTransport({ service: emailCfg.service || 'gmail', auth: { user: emailCfg.user, pass: emailCfg.pass } })
     : null;
-
-// Admin email — the only email that can access /admin dashboard
-const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || config.adminEmail || '').toLowerCase().trim();
-
-// ===== EMAIL WHITELIST =====
-const WHITELIST_FILE = path.join(__dirname, 'authorized-emails.json');
-let emailWhitelist = new Set();
-
-function loadWhitelist() {
-    try {
-        const data = JSON.parse(fs.readFileSync(WHITELIST_FILE, 'utf8'));
-        emailWhitelist = new Set(data.map(e => e.toLowerCase().trim()).filter(Boolean));
-        console.log(`  ✅ Loaded ${emailWhitelist.size} authorized emails`);
-    } catch (e) {
-        console.error('  ❌ Failed to load authorized-emails.json:', e.message);
-        emailWhitelist = new Set();
-    }
-}
-
-function saveWhitelist() {
-    const sorted = [...emailWhitelist].sort();
-    fs.writeFileSync(WHITELIST_FILE, JSON.stringify(sorted, null, 2));
-}
-
-loadWhitelist();
-// Also add admin email to whitelist so admin can use the main site too
-if (ADMIN_EMAIL) emailWhitelist.add(ADMIN_EMAIL);
 
 function generateOtp() { return String(Math.floor(100000 + Math.random() * 900000)); }
 function generateToken() { return crypto.randomBytes(32).toString('hex'); }
@@ -1103,6 +1071,198 @@ async function getTrumpNews() {
 
 
 // ================================================================
+// ===== USA MARKET DATA ==========================================
+// ================================================================
+
+const usaCache = {};
+const USA_CACHE_TTL = 30000; // 30s
+
+// USA indices via TradingView global scanner
+async function fetchUSAIndices() {
+    const now = Date.now();
+    if (usaCache.indices && (now - usaCache.indices.time) < USA_CACHE_TTL) return usaCache.indices.data;
+    const raw = await postJson('https://scanner.tradingview.com/global/scan', {
+        symbols: { tickers: ['SP:SPX', 'NASDAQ:NDX', 'DJ:DJI', 'TVC:RUT', 'TVC:VIX', 'TVC:DXY'] },
+        columns: ['close', 'change', 'change_abs', 'open', 'high', 'low']
+    });
+    const json = JSON.parse(raw);
+    const nameMap = { 'SP:SPX': 'S&P 500', 'NASDAQ:NDX': 'Nasdaq 100', 'DJ:DJI': 'Dow Jones', 'TVC:RUT': 'Russell 2000', 'TVC:VIX': 'VIX', 'TVC:DXY': 'DXY' };
+    const result = {};
+    for (const item of (json.data || [])) {
+        const [close, changePct, changeAbs, open, high, low] = item.d;
+        result[item.s] = { name: nameMap[item.s] || item.s, price: close || 0, change: changePct || 0, open: open || 0, high: high || 0, low: low || 0 };
+    }
+    usaCache.indices = { data: result, time: now };
+    return result;
+}
+
+// USA sectors via SPDR ETFs through TradingView
+const US_SECTOR_ETFS = {
+    'AMEX:XLK': { name: 'Tech', fullName: 'Technology' },
+    'AMEX:XLV': { name: 'Health', fullName: 'Healthcare' },
+    'AMEX:XLF': { name: 'Financials', fullName: 'Financials' },
+    'AMEX:XLY': { name: 'Cons. Disc', fullName: 'Consumer Discretionary' },
+    'AMEX:XLP': { name: 'Staples', fullName: 'Consumer Staples' },
+    'AMEX:XLE': { name: 'Energy', fullName: 'Energy' },
+    'AMEX:XLB': { name: 'Materials', fullName: 'Materials' },
+    'AMEX:XLI': { name: 'Industrials', fullName: 'Industrials' },
+    'AMEX:XLU': { name: 'Utilities', fullName: 'Utilities' },
+    'AMEX:XLRE': { name: 'Real Estate', fullName: 'Real Estate' },
+    'AMEX:XLC': { name: 'Comm. Svcs', fullName: 'Communication Services' },
+};
+
+async function fetchUSASectors() {
+    const now = Date.now();
+    if (usaCache.sectors && (now - usaCache.sectors.time) < USA_CACHE_TTL) return usaCache.sectors.data;
+    const tickers = Object.keys(US_SECTOR_ETFS);
+    const raw = await postJson('https://scanner.tradingview.com/global/scan', {
+        symbols: { tickers },
+        columns: ['close', 'change', 'change_abs', 'open', 'high', 'low']
+    });
+    const json = JSON.parse(raw);
+    const sectors = [];
+    for (const item of (json.data || [])) {
+        const meta = US_SECTOR_ETFS[item.s];
+        if (!meta) continue;
+        const [close, changePct] = item.d;
+        sectors.push({ name: meta.name, fullName: meta.fullName, change: changePct || 0, last: close || 0 });
+    }
+    sectors.sort((a, b) => b.change - a.change);
+    usaCache.sectors = { data: sectors, time: now };
+    return sectors;
+}
+
+// USA gainers/losers from S&P 500 via TradingView
+async function fetchUSAGainersLosers() {
+    const now = Date.now();
+    if (usaCache.gl && (now - usaCache.gl.time) < USA_CACHE_TTL) return usaCache.gl.data;
+    // Fetch top 200 by gain/loss, filter to NYSE/NASDAQ only (OTC foreign ADRs excluded)
+    const [rawG, rawL] = await Promise.all([
+        postJson('https://scanner.tradingview.com/america/scan', {
+            filter: [{ left: 'market_cap_basic', operation: 'greater', right: 2000000000 }],
+            columns: ['name', 'description', 'close', 'change', 'volume'],
+            sort: { sortBy: 'change', sortOrder: 'desc' },
+            range: [0, 200]
+        }),
+        postJson('https://scanner.tradingview.com/america/scan', {
+            filter: [{ left: 'market_cap_basic', operation: 'greater', right: 2000000000 }],
+            columns: ['name', 'description', 'close', 'change', 'volume'],
+            sort: { sortBy: 'change', sortOrder: 'asc' },
+            range: [0, 200]
+        })
+    ]);
+    // Only keep NYSE/NASDAQ listed stocks, exclude preferred shares (symbol contains /)
+    function parseUSStocks(raw) {
+        return (JSON.parse(raw).data || [])
+            .filter(item => /^(NYSE:|NASDAQ:|AMEX:)/.test(item.s || '') && !item.s.includes('/'))
+            .map(item => {
+                const [symbol, desc, close, change, volume] = item.d;
+                return {
+                    symbol: (item.s || '').replace(/^(NASDAQ:|NYSE:|AMEX:)/, ''),
+                    name: desc || symbol || '',
+                    ltp: close || 0, change: change || 0, volume: volume || 0
+                };
+            });
+    }
+    const gainers = parseUSStocks(rawG).filter(s => s.change > 0).slice(0, 10);
+    const losers = parseUSStocks(rawL).filter(s => s.change < 0).slice(0, 10);
+    const result = { gainers, losers };
+    usaCache.gl = { data: result, time: now };
+    return result;
+}
+
+// USA 7-bar stocks (near 52-week high within S&P 500)
+async function fetchUSASevenBar() {
+    const now = Date.now();
+    if (usaCache.sevenBar && (now - usaCache.sevenBar.time) < USA_CACHE_TTL) return usaCache.sevenBar.data;
+    const raw = await postJson('https://scanner.tradingview.com/america/scan', {
+        filter: [{ left: 'market_cap_basic', operation: 'greater', right: 5000000000 }],
+        columns: ['name', 'description', 'close', 'change', 'price_52_week_high', 'price_52_week_low', 'volume'],
+        sort: { sortBy: 'name', sortOrder: 'asc' },
+        range: [0, 503]
+    });
+    const json = JSON.parse(raw);
+    const stocks = (json.data || [])
+        .filter(item => /^(NYSE:|NASDAQ:|AMEX:)/.test(item.s || ''))
+        .map(item => {
+            const [symbol, desc, close, change, weekHigh] = item.d;
+            if (!weekHigh || !close || weekHigh <= 0) return null;
+            const distFromHigh = ((weekHigh - close) / weekHigh) * 100;
+            return {
+                symbol: (item.s || '').replace(/^(NASDAQ:|NYSE:|AMEX:)/, ''),
+                name: desc || symbol || '',
+                ltp: close, change: change || 0,
+                ath: weekHigh, distFromATH: parseFloat(distFromHigh.toFixed(2)),
+                dayChange: (change || 0).toFixed(2)
+            };
+        })
+        .filter(s => s && s.distFromATH >= 0 && s.distFromATH <= 5)
+        .sort((a, b) => a.distFromATH - b.distFromATH)
+        .slice(0, 15);
+    usaCache.sevenBar = { data: { stocks, source: 'live' }, time: now };
+    return usaCache.sevenBar.data;
+}
+
+// S&P 500 EMA status via Yahoo Finance historical data
+async function getSPXEMAStatus() {
+    const now = Date.now();
+    if (usaCache.ema && (now - usaCache.ema.time) < 60 * 60 * 1000) return usaCache.ema.data;
+    try {
+        const raw = await fetchUrl('https://query1.finance.yahoo.com/v8/finance/chart/%5EGSPC?interval=1d&range=4mo');
+        const json = JSON.parse(raw);
+        const closes = (json.chart?.result?.[0]?.indicators?.quote?.[0]?.close || []).filter(c => c != null);
+        if (closes.length < 50) throw new Error('Not enough data');
+        function calcEMA(data, period) {
+            const k = 2 / (period + 1);
+            let ema = data.slice(0, period).reduce((a, b) => a + b, 0) / period;
+            for (let i = period; i < data.length; i++) ema = data[i] * k + ema * (1 - k);
+            return ema;
+        }
+        const currentPrice = closes[closes.length - 1];
+        const ema21 = calcEMA(closes, 21);
+        const ema50 = calcEMA(closes, 50);
+        let status;
+        if (currentPrice > ema21) status = 'yes';
+        else if (currentPrice > ema50) status = 'selective';
+        else status = 'no';
+        const result = { status, currentPrice: parseFloat(currentPrice.toFixed(2)), ema21: parseFloat(ema21.toFixed(2)), ema50: parseFloat(ema50.toFixed(2)), index: 'S&P 500' };
+        usaCache.ema = { data: result, time: now };
+        return result;
+    } catch (e) {
+        console.log('SPX EMA error:', e.message);
+        return { status: 'no', currentPrice: 0, ema21: 0, ema50: 0, index: 'S&P 500' };
+    }
+}
+
+// USA A/D ratio (computed from S&P 500 stocks via TradingView)
+async function fetchUSAAdvDec() {
+    const now = Date.now();
+    if (usaCache.advDec && (now - usaCache.advDec.time) < USA_CACHE_TTL) return usaCache.advDec.data;
+    try {
+        const raw = await postJson('https://scanner.tradingview.com/america/scan', {
+            filter: [
+                { left: 'market_cap_basic', operation: 'greater', right: 2000000000 }
+            ],
+            columns: ['change'],
+            range: [0, 503]
+        });
+        const json = JSON.parse(raw);
+        let advancing = 0, declining = 0, unchanged = 0;
+        for (const item of (json.data || [])) {
+            const change = item.d[0] || 0;
+            if (change > 0.01) advancing++;
+            else if (change < -0.01) declining++;
+            else unchanged++;
+        }
+        const result = { advancing, declining, unchanged };
+        usaCache.advDec = { data: result, time: now };
+        return result;
+    } catch (e) {
+        return { advancing: 0, declining: 0, unchanged: 0 };
+    }
+}
+
+// ================================================================
 // ===== HTTP SERVER ==============================================
 // ================================================================
 
@@ -1599,6 +1759,253 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
+    // ===== USA Market Data =====
+    if (pathname === '/api/usa/market-data') {
+        try {
+            const [indices, emaStatus, advDec, sectors] = await Promise.allSettled([
+                fetchUSAIndices(),
+                getSPXEMAStatus(),
+                fetchUSAAdvDec(),
+                fetchUSASectors()
+            ]);
+            sendJSON(res, 200, {
+                indices: indices.status === 'fulfilled' ? indices.value : {},
+                emaStatus: emaStatus.status === 'fulfilled' ? emaStatus.value : { status: 'no', currentPrice: 0, ema21: 0, ema50: 0 },
+                advancing: advDec.status === 'fulfilled' ? advDec.value.advancing : 0,
+                declining: advDec.status === 'fulfilled' ? advDec.value.declining : 0,
+                unchanged: advDec.status === 'fulfilled' ? advDec.value.unchanged : 0,
+                sectors: sectors.status === 'fulfilled' ? sectors.value : [],
+                timestamp: new Date().toISOString()
+            });
+        } catch (e) { sendJSON(res, 200, { error: e.message }); }
+        return;
+    }
+
+    if (pathname === '/api/usa/gainers') {
+        try {
+            const { gainers } = await fetchUSAGainersLosers();
+            sendJSON(res, 200, { source: 'live', stocks: gainers, timestamp: new Date().toISOString() });
+        } catch (e) { sendJSON(res, 200, { error: e.message, stocks: [] }); }
+        return;
+    }
+
+    if (pathname === '/api/usa/losers') {
+        try {
+            const { losers } = await fetchUSAGainersLosers();
+            sendJSON(res, 200, { source: 'live', stocks: losers, timestamp: new Date().toISOString() });
+        } catch (e) { sendJSON(res, 200, { error: e.message, stocks: [] }); }
+        return;
+    }
+
+    if (pathname === '/api/usa/seven-bar') {
+        try {
+            sendJSON(res, 200, await fetchUSASevenBar());
+        } catch (e) { sendJSON(res, 200, { error: e.message, stocks: [] }); }
+        return;
+    }
+
+    if (pathname === '/api/usa/mbi-data') {
+        try {
+            const sheetUrl = 'https://docs.google.com/spreadsheets/d/1O6OhS7ciA8zwfycBfGPbP2fWJnR0pn2UUvFZVDP9jpE/export?format=csv&gid=1082103394';
+            const csv = await fetchUrlWithHeaders(sheetUrl, {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/csv,text/plain,*/*',
+            });
+            const lines = csv.trim().split('\n').filter(l => l.trim());
+            // Parse header row to understand column structure
+            const headers = lines[0].split(',').map(h => h.replace(/"/g, '').trim());
+            const rows = [];
+            for (let i = 1; i < lines.length && rows.length < 30; i++) {
+                const vals = lines[i].split(',').map(v => v.replace(/"/g, '').replace('%', '').trim());
+                if (!vals[0]) continue;
+                const row = {};
+                headers.forEach((h, idx) => { row[h] = vals[idx] || ''; });
+                rows.push(row);
+            }
+            sendJSON(res, 200, { source: 'live', rows, headers, total: rows.length, timestamp: new Date().toISOString() });
+        } catch (e) {
+            console.error('USA MBI error:', e.message);
+            sendJSON(res, 200, { source: 'fallback', rows: [], error: e.message });
+        }
+        return;
+    }
+
+    if (pathname === '/api/usa/analyse-stock') {
+        const symbol = (parsedUrl.searchParams.get('symbol') || '').toUpperCase().trim();
+        if (!symbol) { sendJSON(res, 200, { error: 'No symbol provided' }); return; }
+        try {
+            // Fetch stock data from Yahoo Finance
+            const [stockRaw, spxRaw] = await Promise.all([
+                fetchUrl(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=1y`),
+                fetchUrl('https://query1.finance.yahoo.com/v8/finance/chart/%5EGSPC?interval=1d&range=1y')
+            ]);
+            const stockJson = JSON.parse(stockRaw);
+            const spxJson = JSON.parse(spxRaw);
+
+            const result = stockJson.chart?.result?.[0];
+            if (!result) { sendJSON(res, 200, { error: `${symbol} not found on Yahoo Finance` }); return; }
+
+            const meta = result.meta || {};
+            const closes = (result.indicators?.quote?.[0]?.close || []).filter(c => c != null);
+            const volumes = (result.indicators?.quote?.[0]?.volume || []).filter(v => v != null);
+
+            const ltp = meta.regularMarketPrice || closes[closes.length - 1] || 0;
+            const prevClose = meta.regularMarketPreviousClose || 0;
+            const open = meta.regularMarketOpen || 0;
+            const high = meta.regularMarketDayHigh || 0;
+            const low = meta.regularMarketDayLow || 0;
+            const yearHigh = meta.fiftyTwoWeekHigh || 0;
+            const yearLow = meta.fiftyTwoWeekLow || 0;
+            const volume = meta.regularMarketVolume || 0;
+            const avgVolume10d = meta.averageDailyVolume10Day || meta.averageDailyVolume3Month || 0;
+            const companyName = meta.longName || meta.shortName || symbol;
+            const pChange = prevClose ? ((ltp - prevClose) / prevClose * 100) : 0;
+
+            // SPX data for relative strength
+            const spxCloses = (spxJson.chart?.result?.[0]?.indicators?.quote?.[0]?.close || []).filter(c => c != null);
+            const spxChange = spxCloses.length >= 63
+                ? ((spxCloses[spxCloses.length - 1] - spxCloses[spxCloses.length - 63]) / spxCloses[spxCloses.length - 63] * 100)
+                : 0;
+            const stockChange3m = closes.length >= 63
+                ? ((closes[closes.length - 1] - closes[closes.length - 63]) / closes[closes.length - 63] * 100)
+                : 0;
+
+            // Compute SMAs
+            function sma(data, n) {
+                if (data.length < n) return null;
+                return data.slice(-n).reduce((a, b) => a + b, 0) / n;
+            }
+            const sma50 = sma(closes, 50);
+            const sma150 = sma(closes, 150);
+            const sma200 = sma(closes, Math.min(200, closes.length));
+
+            const checks = [];
+            let score = 0;
+
+            // Check 1: Price above key SMAs (Trend Template)
+            const aboveSma50 = sma50 && ltp > sma50;
+            const aboveSma200 = sma200 && ltp > sma200;
+            const sma50aboveSma200 = sma50 && sma200 && sma50 > sma200;
+            const trendPass = aboveSma50 && aboveSma200 && sma50aboveSma200;
+            const trendWeight = trendPass ? 20 : (aboveSma50 ? 8 : (aboveSma200 ? 4 : 0));
+            checks.push({
+                name: 'Trend Template (Price vs SMAs)',
+                pass: trendPass,
+                value: sma50 ? `Price $${ltp.toFixed(2)} | 50-SMA $${sma50.toFixed(2)} | 200-SMA $${sma200 ? sma200.toFixed(2) : 'N/A'}` : 'Insufficient history',
+                detail: trendPass ? 'Price above 50 and 200-day SMA, 50 above 200 — full trend template satisfied'
+                    : aboveSma50 ? 'Above 50-SMA but not all trend conditions met'
+                    : 'Price below key moving averages — not in an uptrend',
+                weight: trendWeight
+            });
+            score += trendWeight;
+
+            // Check 2: 52-Week High Proximity
+            const distFrom52WH = yearHigh > 0 ? ((yearHigh - ltp) / yearHigh * 100) : 100;
+            const highPass = distFrom52WH <= 25;
+            const highWeight = distFrom52WH <= 5 ? 20 : distFrom52WH <= 15 ? 15 : distFrom52WH <= 25 ? 8 : 0;
+            checks.push({
+                name: '52-Week High Proximity',
+                pass: highPass,
+                value: `$${ltp.toFixed(2)} | 52W High $${yearHigh.toFixed(2)} | ${distFrom52WH.toFixed(1)}% below high`,
+                detail: distFrom52WH <= 5 ? 'Within 5% of 52-week high — ideal Minervini zone'
+                    : distFrom52WH <= 15 ? 'Within 15% of 52-week high — acceptable range'
+                    : distFrom52WH <= 25 ? 'Within 25% of 52-week high — watch for setup'
+                    : 'Too far from 52-week high — stock is in decline',
+                weight: highWeight
+            });
+            score += highWeight;
+
+            // Check 3: Relative Strength vs S&P 500 (3-month)
+            const rsPass = stockChange3m > spxChange;
+            const rsWeight = stockChange3m > spxChange + 10 ? 20 : stockChange3m > spxChange ? 12 : stockChange3m > spxChange - 5 ? 5 : 0;
+            checks.push({
+                name: 'Relative Strength vs S&P 500',
+                pass: rsPass,
+                value: `Stock 3M: ${stockChange3m.toFixed(1)}% | S&P 500 3M: ${spxChange.toFixed(1)}%`,
+                detail: rsPass
+                    ? `Outperforming S&P 500 by ${(stockChange3m - spxChange).toFixed(1)}% — strong relative strength`
+                    : `Underperforming S&P 500 by ${(spxChange - stockChange3m).toFixed(1)}% — weak RS`,
+                weight: rsWeight
+            });
+            score += rsWeight;
+
+            // Check 4: Volume (current vs 10-day avg)
+            const volPass = avgVolume10d > 0 && volume > avgVolume10d * 0.8;
+            const volWeight = volume > avgVolume10d * 1.5 ? 15 : volume > avgVolume10d ? 10 : volPass ? 5 : 0;
+            checks.push({
+                name: 'Volume Analysis',
+                pass: volPass,
+                value: `Vol: ${(volume / 1e6).toFixed(1)}M | 10-day avg: ${(avgVolume10d / 1e6).toFixed(1)}M`,
+                detail: volume > avgVolume10d * 1.5 ? 'Volume significantly above average — strong institutional interest'
+                    : volume > avgVolume10d ? 'Volume above average — healthy trading activity'
+                    : 'Volume below average — limited institutional participation',
+                weight: volWeight
+            });
+            score += volWeight;
+
+            // Check 5: Stage Analysis (Weinstein)
+            const aboveLow = yearLow > 0 ? ((ltp - yearLow) / (yearHigh - yearLow) * 100) : 0;
+            let stage = 'Unknown';
+            if (distFrom52WH <= 10 && aboveLow >= 50) stage = 'Stage 2 — Advancing';
+            else if (distFrom52WH <= 25 && aboveLow >= 30) stage = 'Stage 2 — Early/Mid Advance';
+            else if (distFrom52WH > 25 && distFrom52WH <= 50 && aboveLow >= 20) stage = 'Stage 1 — Basing (Watch for breakout)';
+            else if (distFrom52WH > 50) stage = 'Stage 4 — Declining (AVOID)';
+            else stage = 'Stage 3 — Topping / Distribution';
+            const isStage2 = stage.includes('Stage 2');
+            const stageWeight = isStage2 ? 15 : (stage.includes('Stage 1') ? 5 : 0);
+            checks.push({
+                name: 'Weinstein Stage Analysis',
+                pass: isStage2,
+                value: stage,
+                detail: isStage2 ? 'Stock is in the ideal stage per Stan Weinstein'
+                    : stage.includes('Stage 1') ? 'Building a base — not ready yet, add to watchlist'
+                    : 'Not in the right zone — Minervini only trades Stage 2 stocks',
+                weight: stageWeight
+            });
+            score += stageWeight;
+
+            // Check 6: 52-week range position (breakout readiness)
+            const rangePosition = yearHigh > yearLow ? ((ltp - yearLow) / (yearHigh - yearLow) * 100) : 50;
+            const breakoutPass = rangePosition >= 70;
+            const breakoutWeight = rangePosition >= 90 ? 10 : rangePosition >= 70 ? 7 : rangePosition >= 50 ? 3 : 0;
+            checks.push({
+                name: 'Breakout Readiness',
+                pass: breakoutPass,
+                value: `${rangePosition.toFixed(0)}% of 52-week range | 52W Low $${yearLow.toFixed(2)}`,
+                detail: rangePosition >= 90 ? 'Near top of 52-week range — prime breakout territory'
+                    : rangePosition >= 70 ? 'In upper half of range — well-positioned for breakout'
+                    : 'Mid-range or below — not in breakout position',
+                weight: breakoutWeight
+            });
+            score += breakoutWeight;
+
+            // Overall verdict
+            let verdict, verdictClass;
+            if (score >= 70) { verdict = 'STRONG CANDIDATE'; verdictClass = 'strong-candidate'; }
+            else if (score >= 50) { verdict = 'WATCHLIST — WAIT FOR SETUP'; verdictClass = 'watchlist'; }
+            else if (score >= 30) { verdict = 'WEAK — NOT IDEAL FOR SWING'; verdictClass = 'weak'; }
+            else { verdict = 'AVOID — DOES NOT MEET CRITERIA'; verdictClass = 'avoid'; }
+
+            sendJSON(res, 200, {
+                symbol, companyName, industry: meta.exchange || 'US Stock',
+                ltp: parseFloat(ltp.toFixed(2)), pChange: parseFloat(pChange.toFixed(2)),
+                open: parseFloat(open.toFixed(2)), high: parseFloat(high.toFixed(2)),
+                low: parseFloat(low.toFixed(2)), prevClose: parseFloat(prevClose.toFixed(2)),
+                yearHigh: parseFloat(yearHigh.toFixed(2)), yearLow: parseFloat(yearLow.toFixed(2)),
+                score, verdict, verdictClass, checks,
+                minerviniNote: score >= 50
+                    ? 'This stock shows characteristics that Minervini looks for: proximity to new highs, relative strength, and proper stage positioning. Look for a VCP or tight consolidation near pivot for entry.'
+                    : 'This stock currently does not meet Minervini\'s SEPA criteria. Either wait for it to set up properly or look for better candidates near 52-week highs with strong relative strength.',
+                market: 'usa',
+                timestamp: new Date().toISOString()
+            });
+        } catch (e) {
+            console.error('USA analyse-stock error:', e.message);
+            sendJSON(res, 200, { error: `Could not fetch data for ${symbol}. Make sure it is a valid US ticker (e.g. AAPL, MSFT, NVDA).`, symbol });
+        }
+        return;
+    }
+
     // ===== News Endpoints =====
 
     if (pathname === '/api/news') {
@@ -1623,17 +2030,13 @@ const server = http.createServer(async (req, res) => {
                 if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
                     sendJSON(res, 400, { error: 'Invalid email address' }); return;
                 }
-                const normalizedEmail = email.toLowerCase().trim();
-                if (!emailWhitelist.has(normalizedEmail)) {
-                    sendJSON(res, 403, { error: 'This email is not authorized to access Market Monitor. Contact support for access.' }); return;
-                }
-                const existing = otpStore.get(normalizedEmail);
+                const existing = otpStore.get(email);
                 if (existing && existing.expiry > Date.now() && existing.attempts >= 5) {
                     sendJSON(res, 429, { error: 'Too many attempts. Try again in 10 minutes.' }); return;
                 }
                 const otp = generateOtp();
-                otpStore.set(normalizedEmail, { otp, expiry: Date.now() + 10 * 60 * 1000, attempts: 0 });
-                await sendOtpEmail(normalizedEmail, otp);
+                otpStore.set(email, { otp, expiry: Date.now() + 10 * 60 * 1000, attempts: 0 });
+                await sendOtpEmail(email, otp);
                 sendJSON(res, 200, { success: true, message: 'Code sent to your email' });
             } catch (e) {
                 console.error('OTP send error:', e.message);
@@ -1678,106 +2081,6 @@ const server = http.createServer(async (req, res) => {
             if (token) sessionStore.delete(token);
             sendJSON(res, 401, { valid: false });
         }
-        return;
-    }
-
-    // ===== ADMIN — Email whitelist management =====
-    // Admin dashboard page
-    if (pathname === '/admin') {
-        const token = parsedUrl.searchParams.get('token') || '';
-        const session = sessionStore.get(token);
-        if (!session || session.expiry < Date.now() || session.email !== ADMIN_EMAIL) {
-            // Serve admin login page
-            try {
-                const html = fs.readFileSync(path.join(ROOT, 'admin.html'), 'utf8');
-                res.writeHead(200, { 'Content-Type': 'text/html', 'Cache-Control': 'no-cache' });
-                res.end(html);
-            } catch (e) {
-                sendJSON(res, 404, { error: 'Admin page not found' });
-            }
-            return;
-        }
-        // Authenticated admin — serve dashboard with token embedded
-        try {
-            let html = fs.readFileSync(path.join(ROOT, 'admin.html'), 'utf8');
-            res.writeHead(200, { 'Content-Type': 'text/html', 'Cache-Control': 'no-cache' });
-            res.end(html);
-        } catch (e) {
-            sendJSON(res, 404, { error: 'Admin page not found' });
-        }
-        return;
-    }
-
-    // Admin API — check if session is admin
-    if (pathname.startsWith('/admin/api/')) {
-        const token = (req.headers['authorization'] || '').replace('Bearer ', '');
-        const session = sessionStore.get(token);
-        if (!session || session.expiry < Date.now() || session.email !== ADMIN_EMAIL) {
-            sendJSON(res, 401, { error: 'Unauthorized' });
-            return;
-        }
-
-        // GET /admin/api/emails — list all authorized emails
-        if (pathname === '/admin/api/emails' && req.method === 'GET') {
-            const search = parsedUrl.searchParams.get('q') || '';
-            let emails = [...emailWhitelist].sort();
-            if (search) {
-                const q = search.toLowerCase();
-                emails = emails.filter(e => e.includes(q));
-            }
-            sendJSON(res, 200, { total: emailWhitelist.size, filtered: emails.length, emails });
-            return;
-        }
-
-        // POST /admin/api/emails — add email
-        if (pathname === '/admin/api/emails' && req.method === 'POST') {
-            let body = '';
-            req.on('data', d => body += d);
-            req.on('end', () => {
-                try {
-                    const { email } = JSON.parse(body);
-                    const normalized = (email || '').toLowerCase().trim();
-                    if (!normalized || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) {
-                        sendJSON(res, 400, { error: 'Invalid email address' }); return;
-                    }
-                    if (emailWhitelist.has(normalized)) {
-                        sendJSON(res, 409, { error: 'Email already authorized' }); return;
-                    }
-                    emailWhitelist.add(normalized);
-                    saveWhitelist();
-                    sendJSON(res, 200, { success: true, email: normalized, total: emailWhitelist.size });
-                } catch (e) {
-                    sendJSON(res, 400, { error: 'Invalid request' });
-                }
-            });
-            return;
-        }
-
-        // DELETE /admin/api/emails — remove email
-        if (pathname === '/admin/api/emails' && req.method === 'DELETE') {
-            let body = '';
-            req.on('data', d => body += d);
-            req.on('end', () => {
-                try {
-                    const { email } = JSON.parse(body);
-                    const normalized = (email || '').toLowerCase().trim();
-                    if (normalized === ADMIN_EMAIL) {
-                        sendJSON(res, 400, { error: 'Cannot remove admin email' }); return;
-                    }
-                    if (!emailWhitelist.has(normalized)) {
-                        sendJSON(res, 404, { error: 'Email not found' }); return;
-                    }
-                    emailWhitelist.delete(normalized);
-                    saveWhitelist();
-                    sendJSON(res, 200, { success: true, removed: normalized, total: emailWhitelist.size });
-                } catch (e) {
-                    sendJSON(res, 400, { error: 'Invalid request' });
-                }
-            });
-            return;
-        }
-
-        sendJSON(res, 404, { error: 'Not found' });
         return;
     }
 
