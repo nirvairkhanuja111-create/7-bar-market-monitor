@@ -1122,6 +1122,64 @@ async function getUSAMarketNews() {
 let usaEarningsCache = { data: null, time: 0 };
 const USA_EARNINGS_CACHE_TTL = 3600000; // 1 hour
 
+// ================================================================
+// ===== INDIA EARNINGS CALENDAR ==================================
+// ================================================================
+
+let indiaEarningsCache = { data: null, time: 0 };
+const INDIA_EARNINGS_CACHE_TTL = 1800000; // 30 min
+
+async function getIndiaEarningsCalendar() {
+    const now = Date.now();
+    if (indiaEarningsCache.data && (now - indiaEarningsCache.time) < INDIA_EARNINGS_CACHE_TTL) return indiaEarningsCache.data;
+    try {
+        // Try board meetings endpoint first, then fall back to event calendar
+        let events = [];
+        try {
+            events = await fetchNSE('/api/boardMeetings?status=upcoming');
+            if (!Array.isArray(events)) events = events.data || [];
+        } catch (e1) {
+            try {
+                const cal = await fetchNSE('/api/event-calendar');
+                events = Array.isArray(cal) ? cal : [];
+            } catch (e2) { events = []; }
+        }
+
+        const today = new Date();
+        const earnings = events
+            .filter(e => {
+                // Accept financial results, board meetings, or any quarterly/annual event
+                const subj = (e.subject || e.bm_desc || e.purpose || '').toLowerCase();
+                return subj.includes('result') || subj.includes('dividend') ||
+                       subj.includes('agm') || subj.includes('board') || subj.includes('financial');
+            })
+            .filter(e => {
+                const dateStr = e.date || e.bm_date || '';
+                if (!dateStr) return false;
+                // NSE dates: "DD-MMM-YYYY" or "YYYY-MM-DD"
+                const d = new Date(dateStr);
+                if (isNaN(d)) return true; // include if can't parse
+                const diff = (d - today) / 86400000;
+                return diff >= -1 && diff <= 30;
+            })
+            .slice(0, 20)
+            .map(e => ({
+                symbol: e.symbol || '',
+                companyName: e.company || e.companyName || e.symbol || '',
+                date: e.date || e.bm_date || '',
+                subject: e.subject || e.bm_desc || e.purpose || '',
+                time: '--',
+            }));
+        const result = { earnings, source: earnings.length ? 'live' : 'fallback', timestamp: new Date().toISOString() };
+        indiaEarningsCache.data = result;
+        indiaEarningsCache.time = now;
+        return result;
+    } catch (e) {
+        console.log('India earnings error:', e.message);
+        return { earnings: [], source: 'fallback', error: e.message };
+    }
+}
+
 async function getUSAEarningsCalendar() {
     const now = Date.now();
     if (usaEarningsCache.data && (now - usaEarningsCache.time) < USA_EARNINGS_CACHE_TTL) return usaEarningsCache.data;
@@ -1963,6 +2021,108 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
+    if (pathname === '/api/stage-analysis') {
+        const symbol = (parsedUrl.searchParams.get('symbol') || '').toUpperCase().trim();
+        const market = parsedUrl.searchParams.get('market') || 'india';
+        if (!symbol) { sendJSON(res, 200, { error: 'No symbol provided' }); return; }
+        try {
+            const yhSymbol = market === 'india' ? `${symbol}.NS` : symbol;
+            const url = `https://query1.finance.yahoo.com/v8/finance/chart/${yhSymbol}?interval=1d&range=2y`;
+            const raw = await fetchUrl(url);
+            const json = JSON.parse(raw);
+            const result = json.chart?.result?.[0];
+            if (!result) throw new Error('No data returned');
+
+            const rawCloses = result.indicators.quote[0].close;
+            const rawVolumes = result.indicators.quote[0].volume;
+            const closes = rawCloses.filter(Boolean);
+            const volumes = rawVolumes.map(v => v || 0);
+
+            if (closes.length < 100) throw new Error('Insufficient price history');
+
+            const meta = result.meta || {};
+            const name = meta.longName || meta.shortName || symbol;
+            const ltp = closes[closes.length - 1];
+
+            // Compute SMAs
+            function sma(arr, period) {
+                const out = [];
+                for (let i = 0; i < arr.length; i++) {
+                    if (i < period - 1) { out.push(null); continue; }
+                    const slice = arr.slice(i - period + 1, i + 1);
+                    out.push(slice.reduce((a, b) => a + b, 0) / period);
+                }
+                return out;
+            }
+
+            const sma150 = sma(closes, 150); // ~30 weeks
+            const sma50  = sma(closes, 50);  // ~10 weeks
+            const sma200 = sma(closes, 200); // 40 weeks
+
+            const cur150 = sma150[sma150.length - 1];
+            const cur50  = sma50[sma50.length - 1];
+            const cur200 = sma200[sma200.length - 1];
+
+            // Slope of 30W SMA over last 4 weeks (20 trading days)
+            const prev150 = sma150[sma150.length - 21] || cur150;
+            const slope150pct = ((cur150 - prev150) / prev150) * 100;
+
+            // Volume: avg 50-day vs recent 10-day
+            const vol50avg = volumes.slice(-50).reduce((a, b) => a + b, 0) / 50;
+            const vol10avg = volumes.slice(-10).reduce((a, b) => a + b, 0) / 10;
+            const volRatio = vol50avg > 0 ? vol10avg / vol50avg : 1;
+
+            // 52-week high/low
+            const yearCloses = closes.slice(-252);
+            const yearHigh = Math.max(...yearCloses);
+            const yearLow  = Math.min(...yearCloses);
+            const pctFrom52WH = ((ltp - yearHigh) / yearHigh) * 100;
+
+            // Stage determination (Weinstein)
+            const aboveSMA150 = ltp > cur150;
+            const rising150   = slope150pct > 0.3;
+            const flat150     = Math.abs(slope150pct) <= 0.3;
+            const falling150  = slope150pct < -0.3;
+
+            let stage, stageName, stageClass, stageAction, stageDesc;
+            if (aboveSMA150 && rising150 && ltp > cur50) {
+                stage = 2; stageName = 'STAGE 2'; stageClass = 'stage-2';
+                stageAction = 'ADVANCING';
+                stageDesc = 'Price is above a rising 30-week MA. Classic Mark-Up phase. Look for pullbacks to 10W MA for entry or VCP patterns near new highs.';
+            } else if (aboveSMA150 && (flat150 || falling150)) {
+                stage = 3; stageName = 'STAGE 3'; stageClass = 'stage-3';
+                stageAction = 'TOPPING';
+                stageDesc = 'Price near a flattening/declining 30-week MA after an advance. Distribution phase. Avoid new longs; reduce existing positions.';
+            } else if (!aboveSMA150 && falling150) {
+                stage = 4; stageName = 'STAGE 4'; stageClass = 'stage-4';
+                stageAction = 'DECLINING';
+                stageDesc = 'Price below a declining 30-week MA. Mark-Down phase. Do not buy — wait for Stage 1 base to form before considering.';
+            } else {
+                stage = 1; stageName = 'STAGE 1'; stageClass = 'stage-1';
+                stageAction = 'BASING';
+                stageDesc = 'Price consolidating near a flattening 30-week MA. Accumulation phase. Watch for a volume-backed breakout above the base to confirm Stage 2.';
+            }
+
+            sendJSON(res, 200, {
+                symbol, name, market, ltp: parseFloat(ltp.toFixed(2)),
+                stage, stageName, stageClass, stageAction, stageDesc,
+                sma150: parseFloat((cur150 || 0).toFixed(2)),
+                sma50:  parseFloat((cur50  || 0).toFixed(2)),
+                sma200: parseFloat((cur200 || 0).toFixed(2)),
+                slope30W: parseFloat(slope150pct.toFixed(2)),
+                volRatio: parseFloat(volRatio.toFixed(2)),
+                yearHigh: parseFloat(yearHigh.toFixed(2)),
+                yearLow:  parseFloat(yearLow.toFixed(2)),
+                pctFrom52WH: parseFloat(pctFrom52WH.toFixed(2)),
+                timestamp: new Date().toISOString()
+            });
+        } catch (e) {
+            const suffix = market === 'india' ? ' (use NSE symbol e.g. RELIANCE, INFY)' : ' (use US ticker e.g. AAPL, NVDA)';
+            sendJSON(res, 200, { error: `Could not fetch data for ${symbol}.${suffix}`, symbol });
+        }
+        return;
+    }
+
     if (pathname === '/api/usa/analyse-stock') {
         const symbol = (parsedUrl.searchParams.get('symbol') || '').toUpperCase().trim();
         if (!symbol) { sendJSON(res, 200, { error: 'No symbol provided' }); return; }
@@ -2147,6 +2307,12 @@ const server = http.createServer(async (req, res) => {
 
     if (pathname === '/api/usa/earnings') {
         try { sendJSON(res, 200, await getUSAEarningsCalendar()); }
+        catch (e) { sendJSON(res, 200, { error: e.message, earnings: [] }); }
+        return;
+    }
+
+    if (pathname === '/api/india/earnings') {
+        try { sendJSON(res, 200, await getIndiaEarningsCalendar()); }
         catch (e) { sendJSON(res, 200, { error: e.message, earnings: [] }); }
         return;
     }
