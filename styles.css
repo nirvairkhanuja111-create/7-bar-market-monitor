@@ -852,6 +852,21 @@ body {
     font-size: 24px;
 }
 
+/* ===== STAGE ANALYSIS ===== */
+.stage-result { padding: 20px 24px; }
+.stage-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
+.stage-title-area {}
+.stage-symbol { font-size: 22px; font-weight: 800; letter-spacing: 1px; display: inline-flex; align-items: center; gap: 8px; }
+.stage-company { font-size: 12px; color: var(--text-muted); margin-top: 3px; }
+.stage-badge { display: flex; flex-direction: column; align-items: center; padding: 10px 18px; border-radius: 10px; min-width: 130px; text-align: center; }
+.stage-number { font-size: 16px; font-weight: 800; letter-spacing: 1px; }
+.stage-action { font-size: 10px; font-weight: 700; letter-spacing: 2px; opacity: 0.8; margin-top: 2px; }
+.stage-desc { font-size: 12px; color: var(--text-secondary); line-height: 1.6; background: rgba(255,255,255,0.03); border-radius: 8px; padding: 12px 14px; margin-bottom: 16px; border-left: 3px solid rgba(255,255,255,0.1); }
+.stage-metrics { display: flex; flex-wrap: wrap; gap: 10px; }
+.stage-metric { background: rgba(255,255,255,0.04); border-radius: 8px; padding: 10px 14px; min-width: 100px; flex: 1; }
+.sm-label { display: block; font-size: 9px; color: var(--text-muted); font-weight: 600; letter-spacing: 0.8px; text-transform: uppercase; margin-bottom: 4px; }
+.sm-val { font-size: 13px; font-weight: 700; color: var(--text-primary); font-family: 'JetBrains Mono', monospace; }
+
 /* Analysis Result */
 .analysis-result {
     animation: slide-up 0.3s ease-out;
@@ -1267,6 +1282,21 @@ body {
     color: var(--text-primary);
     letter-spacing: 0.3px;
 }
+a.tv-link {
+    text-decoration: none;
+    color: inherit;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    transition: color 0.15s;
+}
+a.tv-link:hover { color: #2979ff; }
+.tv-icon {
+    font-size: 9px;
+    opacity: 0;
+    transition: opacity 0.15s;
+}
+.stock-item:hover .tv-icon { opacity: 0.7; }
 
 .stock-fullname {
     font-size: 10px;
