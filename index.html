@@ -25,8 +25,12 @@
                 </div>
                 <div>
                     <h1 class="logo-title">MARKET MONITOR</h1>
-                    <p class="logo-subtitle">Indian Market Intelligence Dashboard</p>
+                    <p class="logo-subtitle">Market Intelligence Dashboard</p>
                 </div>
+            </div>
+            <div class="market-tabs">
+                <button class="market-tab active" data-market="india" onclick="switchMarket('india')">INDIA</button>
+                <button class="market-tab" data-market="usa" onclick="switchMarket('usa')">USA</button>
             </div>
         </div>
         <div class="header-center">
@@ -83,7 +87,7 @@
 
         <!-- Custom: Advance/Decline -->
         <div class="kpi-card adv-dec-card">
-            <div class="kpi-label">NIFTY 500 ADV / DEC <span class="source-badge" id="advDecSource"></span></div>
+            <div class="kpi-label" id="advDecLabel">NIFTY 500 ADV / DEC <span class="source-badge" id="advDecSource"></span></div>
             <div class="adv-dec-nums">
                 <span class="adv-num" id="advCount">--</span>
                 <span class="adv-dec-sep">/</span>
@@ -118,7 +122,7 @@
         <div class="col-card">
             <div class="col-header">
                 <div class="col-title gainers-title"><i class="fas fa-arrow-trend-up"></i> TOP 10 LIQUID GAINERS <span class="source-badge" id="gainersSource"></span></div>
-                <span class="col-badge badge-green">NIFTY 500</span>
+                <span class="col-badge badge-green" id="gainersMarketBadge">NIFTY 500</span>
             </div>
             <div class="stock-list" id="gainersList">
                 <div class="loading-placeholder"><div class="spinner"></div><span>Loading...</span></div>
@@ -127,7 +131,7 @@
         <div class="col-card">
             <div class="col-header">
                 <div class="col-title losers-title"><i class="fas fa-arrow-trend-down"></i> TOP 10 LIQUID LOSERS <span class="source-badge" id="losersSource"></span></div>
-                <span class="col-badge badge-red">NIFTY 500</span>
+                <span class="col-badge badge-red" id="losersMarketBadge">NIFTY 500</span>
             </div>
             <div class="stock-list" id="losersList">
                 <div class="loading-placeholder"><div class="spinner"></div><span>Loading...</span></div>
@@ -196,7 +200,7 @@
             <div class="analyser-content">
                 <div class="analyser-input-area">
                     <div class="analyser-search">
-                        <input type="text" id="analyserTicker" class="analyser-input" placeholder="NSE TICKER ONLY — e.g. TRENT, not TRENT.NS" autocomplete="off" spellcheck="false">
+                        <input type="text" id="analyserTicker" class="analyser-input" placeholder="Ticker — e.g. TRENT (India) or AAPL (USA)" autocomplete="off" spellcheck="false">
                         <button id="analyserBtn" class="analyser-btn"><i class="fas fa-search"></i> ANALYSE</button>
                     </div>
                     <div class="analyser-quick-picks" id="analyserQuickPicks">
