@@ -191,8 +191,8 @@
         </div>
     </section>
 
-    <!-- ROW 4b: Earnings Calendar (USA only) -->
-    <section class="mbi-section usa-only-section" id="earningsSection" style="display:none">
+    <!-- ROW 4b: Earnings Calendar -->
+    <section class="mbi-section" id="earningsSection">
         <div class="mbi-card">
             <div class="card-header">
                 <h3><i class="fas fa-calendar-alt"></i> EARNINGS CALENDAR <span style="font-size:0.55em;opacity:0.5;font-weight:normal">(This Week)</span></h3>
@@ -237,6 +237,42 @@
                             <div class="method-item"><span class="method-check">4</span> Volume Pattern Analysis</div>
                             <div class="method-item"><span class="method-check">5</span> Stage Analysis (Weinstein)</div>
                             <div class="method-item"><span class="method-check">6</span> Breakout Readiness Score</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ROW 6: Stage Analysis (Weinstein) -->
+    <section class="analyser-section">
+        <div class="analyser-card">
+            <div class="card-header">
+                <h3><i class="fas fa-layer-group"></i> STAGE ANALYSIS <span class="analyser-badge">STAN WEINSTEIN</span></h3>
+            </div>
+            <div class="analyser-content">
+                <div class="analyser-input-area">
+                    <div class="analyser-search">
+                        <input type="text" id="stageTicker" class="analyser-input" placeholder="Ticker — e.g. RELIANCE (India) or AAPL (USA)" autocomplete="off" spellcheck="false">
+                        <button id="stageBtn" class="analyser-btn"><i class="fas fa-layer-group"></i> ANALYSE STAGE</button>
+                    </div>
+                    <div class="analyser-quick-picks" id="stageQuickPicks">
+                        <span class="quick-pick" data-stage-ticker="RELIANCE">RELIANCE</span>
+                        <span class="quick-pick" data-stage-ticker="INFY">INFY</span>
+                        <span class="quick-pick" data-stage-ticker="HDFCBANK">HDFCBANK</span>
+                        <span class="quick-pick" data-stage-ticker="TRENT">TRENT</span>
+                        <span class="quick-pick" data-stage-ticker="DIXON">DIXON</span>
+                    </div>
+                </div>
+                <div class="analyser-result" id="stageResult">
+                    <div class="analyser-placeholder">
+                        <i class="fas fa-layer-group"></i>
+                        <p>Enter a ticker to determine its Weinstein Stage</p>
+                        <div class="analyser-method-summary">
+                            <div class="method-item"><span class="method-check">1</span> Stage 1 — Basing/Accumulation (flat 30W MA)</div>
+                            <div class="method-item"><span class="method-check">2</span> Stage 2 — Advancing (price above rising 30W MA)</div>
+                            <div class="method-item"><span class="method-check">3</span> Stage 3 — Topping/Distribution (flattening 30W MA)</div>
+                            <div class="method-item"><span class="method-check">4</span> Stage 4 — Declining (price below falling 30W MA)</div>
                         </div>
                     </div>
                 </div>
