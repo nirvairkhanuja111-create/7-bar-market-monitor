@@ -290,8 +290,8 @@ function bootDashboard() {
     // Load all data in parallel
     loadAllData();
 
-    // Auto-refresh
-    setInterval(loadAllData, 60000);
+    // Auto-refresh (market-aware)
+    setInterval(() => { if (currentMarket === 'usa') loadUSAData(); else loadAllData(); }, 60000);
     setInterval(rotateQuote, 20000);
 }
 
@@ -308,10 +308,10 @@ async function loadAllData() {
         const res = await fetch('/api/dashboard');
         if (res.ok) {
             const d = await res.json();
-            // Market data (advance/decline, sentiment, heatmap)
-            if (d.marketData) processMarketData(d.marketData);
-            // Index KPIs
-            if (d.indexQuotes && d.indexQuotes.indices) {
+            // Market data (advance/decline, sentiment, heatmap) — India only
+            if (currentMarket !== 'usa' && d.marketData) processMarketData(d.marketData);
+            // Index KPIs — only update if on India tab
+            if (currentMarket !== 'usa' && d.indexQuotes && d.indexQuotes.indices) {
                 const idx = d.indexQuotes.indices;
                 renderIndexCard('kpi-nifty', idx.nifty);
                 renderIndexCard('kpi-banknifty', idx.banknifty);
@@ -319,23 +319,24 @@ async function loadAllData() {
                 renderIndexCard('kpi-gold', idx.gold);
                 renderIndexCard('kpi-usdinr', idx.usdinr);
             }
-            // Stock columns
-            renderSevenBarList((d.sevenBar && d.sevenBar.stocks) || [], d.sevenBar?.source || 'live');
-            renderGainersList((d.gainers && d.gainers.stocks) || [], d.gainers?.source || 'live');
-            renderLosersList((d.losers && d.losers.stocks) || [], d.losers?.source || 'live');
-            // News
-            renderNewsList('marketNewsList', (d.news && d.news.items) || [], 'market');
-            renderNewsList('trumpNewsList', (d.trumpNews && d.trumpNews.items) || [], 'trump');
+            // Only render India stock/news sections if still on India tab
+            if (currentMarket !== 'usa') {
+                renderSevenBarList((d.sevenBar && d.sevenBar.stocks) || [], d.sevenBar?.source || 'live');
+                renderGainersList((d.gainers && d.gainers.stocks) || [], d.gainers?.source || 'live');
+                renderLosersList((d.losers && d.losers.stocks) || [], d.losers?.source || 'live');
+                renderNewsList('marketNewsList', (d.news && d.news.items) || [], 'market');
+                renderNewsList('trumpNewsList', (d.trumpNews && d.trumpNews.items) || [], 'trump');
+            }
         } else {
             throw new Error('Dashboard fetch failed');
         }
     } catch (e) {
         console.warn('Combined dashboard fetch failed, falling back to individual calls:', e.message);
-        await Promise.all([loadMarketData(), loadStockColumns(), fetchLiveNews(), loadIndexKPIs()]);
+        if (currentMarket !== 'usa') await Promise.all([loadMarketData(), loadStockColumns(), fetchLiveNews(), loadIndexKPIs()]);
     }
 
     // MBI is separate (Google Sheets, can be slow)
-    loadMBIData();
+    if (currentMarket !== 'usa') loadMBIData();
 
     document.getElementById("lastUpdated").textContent = new Date().toLocaleTimeString("en-IN", {
         timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit", second: "2-digit"
@@ -1174,8 +1175,16 @@ function switchMarket(market) {
         document.getElementById('analyserTicker') && (document.getElementById('analyserTicker').placeholder = 'Ticker — e.g. TRENT (India) or AAPL (USA)');
         const qp = document.getElementById('analyserQuickPicks');
         if (qp) resetIndiaQuickPicks();
+        // Restore India ticker
+        tickerBuilt = false;
+        refreshTicker();
+        // Hide earnings section
+        const earningsSection = document.getElementById('earningsSection');
+        if (earningsSection) earningsSection.style.display = 'none';
         showShimmerLoading();
         loadAllData();
+        // Restore India market news
+        fetchLiveNews();
     } else {
         // Set USA labels
         setLabel('kpi-nifty', 'S&P 500');
@@ -1191,8 +1200,13 @@ function switchMarket(market) {
         document.getElementById('analyserTicker') && (document.getElementById('analyserTicker').placeholder = 'US TICKER — e.g. AAPL, NVDA, MSFT');
         const qp = document.getElementById('analyserQuickPicks');
         if (qp) setUSAQuickPicks();
+        // Show earnings section
+        const earningsSection = document.getElementById('earningsSection');
+        if (earningsSection) earningsSection.style.display = 'block';
         showShimmerLoading();
         loadUSAData();
+        // Load USA news
+        fetchUSANews();
     }
 }
 
@@ -1302,6 +1316,13 @@ async function loadUSAData() {
         if (mbiData.status === 'fulfilled') {
             renderUSAMBI(mbiData.value);
         }
+        // Build NASDAQ 100 ticker tape
+        fetch('/api/usa/ndx100').then(r => r.json()).then(d => renderUSATicker(d.stocks || [])).catch(() => {
+            // fallback to gainers if NDX100 fails
+            if (gainersData.status === 'fulfilled') renderUSATicker(gainersData.value.stocks || []);
+        });
+        // Load earnings calendar
+        fetch('/api/usa/earnings').then(r => r.json()).then(renderUSAEarnings).catch(() => {});
     } catch (e) {
         console.error('USA data load error:', e);
     }
@@ -1351,18 +1372,19 @@ function renderUSAStockList(containerId, stocks, type) {
     if (!container) return;
     if (!stocks.length) { container.innerHTML = '<div class="no-data">No data available</div>'; return; }
     container.innerHTML = stocks.map((s, i) => {
-        const changeClass = s.change >= 0 ? 'positive' : 'negative';
-        const changeSign = s.change >= 0 ? '+' : '';
+        const change = parseFloat(s.change) || 0;
+        const changeClass = change >= 0 ? 'positive' : 'negative';
+        const changeSign = change >= 0 ? '+' : '';
         return `
             <div class="stock-item">
                 <span class="stock-rank">${i + 1}</span>
                 <div class="stock-info">
-                    <div class="stock-symbol">${s.symbol}</div>
-                    <div class="stock-name">${s.name || ''}</div>
+                    <div class="stock-name">${s.symbol}</div>
+                    <div class="stock-fullname">${s.name || ''}</div>
                 </div>
-                <div class="stock-price-info">
+                <div class="stock-price">
                     <div class="stock-ltp">$${(s.ltp || 0).toFixed(2)}</div>
-                    <div class="stock-change ${changeClass}">${changeSign}${(s.change || 0).toFixed(2)}%</div>
+                    <div class="stock-pct ${changeClass}">${changeSign}${change.toFixed(2)}%</div>
                 </div>
             </div>
         `;
@@ -1374,17 +1396,19 @@ function renderUSASevenBar(containerId, stocks) {
     if (!container) return;
     if (!stocks.length) { container.innerHTML = '<div class="no-data">No S&P 500 stocks within 5% of 52-week high</div>'; return; }
     container.innerHTML = stocks.map((s, i) => {
-        const changeClass = parseFloat(s.dayChange) >= 0 ? 'positive' : 'negative';
+        const dayChange = parseFloat(s.dayChange) || 0;
+        const changeClass = dayChange >= 0 ? 'positive' : 'negative';
+        const changeSign = dayChange >= 0 ? '+' : '';
         return `
-            <div class="stock-item seven-bar-item">
+            <div class="stock-item">
                 <span class="stock-rank">${i + 1}</span>
                 <div class="stock-info">
-                    <div class="stock-symbol">${s.symbol}</div>
-                    <div class="stock-name">${s.name || ''}</div>
+                    <div class="stock-name">${s.symbol}</div>
+                    <div class="stock-fullname">${s.name || ''}</div>
                 </div>
-                <div class="stock-price-info">
+                <div class="stock-price">
                     <div class="stock-ltp">$${(s.ltp || 0).toFixed(2)}</div>
-                    <div class="stock-ath-dist">${s.distFromATH}% from ATH</div>
+                    <div class="stock-pct ${changeClass}">${changeSign}${dayChange.toFixed(2)}%</div>
                 </div>
             </div>
         `;
@@ -1395,26 +1419,141 @@ function renderUSAMBI(data) {
     const wrapper = document.getElementById('mbiTableWrapper');
     if (!wrapper) return;
     if (!data.rows || data.rows.length === 0) {
-        wrapper.innerHTML = '<div class="mbi-unavailable">USA breadth data unavailable</div>';
+        wrapper.innerHTML = '<div class="no-data">USA breadth data unavailable</div>';
         return;
     }
-    // Render as table using the headers from the sheet
-    const headers = data.headers || [];
+    // Use only first 7 columns (A through G)
+    const allHeaders = data.headers || [];
+    const headers = allHeaders.slice(0, 7).filter(h => h && h.trim());
     const rows = data.rows.slice(0, 20);
-    if (!headers.length) { wrapper.innerHTML = '<div class="mbi-unavailable">No headers found in sheet</div>'; return; }
+    if (!headers.length) { wrapper.innerHTML = '<div class="no-data">No headers found in sheet</div>'; return; }
 
-    const table = `
-        <table class="mbi-table">
-            <thead><tr>${headers.map(h => `<th>${h}</th>`).join('')}</tr></thead>
-            <tbody>${rows.map(row => `<tr>${headers.map(h => {
-                const val = row[h] || '';
-                const num = parseFloat(val);
-                let cls = '';
-                if (!isNaN(num) && h.toLowerCase().includes('adv')) cls = 'positive';
-                else if (!isNaN(num) && h.toLowerCase().includes('dec')) cls = 'negative';
-                return `<td class="${cls}">${val}</td>`;
-            }).join('')}</tr>`).join('')}</tbody>
-        </table>
-    `;
-    wrapper.innerHTML = table;
+    let html = `<div class="mbi-table-scroll"><table class="mbi-table"><thead><tr>`;
+    html += headers.map(h => `<th>${h}</th>`).join('');
+    html += `</tr></thead><tbody>`;
+
+    for (const row of rows) {
+        // Determine row class by first numeric column that might be advance/decline
+        let rowClass = '';
+        const firstVal = parseFloat(row[headers[0]]);
+        if (!isNaN(firstVal)) {
+            // Try to color by context
+        }
+        html += `<tr class="${rowClass}">`;
+        for (const h of headers) {
+            const val = row[h] !== undefined ? row[h] : '';
+            const num = parseFloat(val);
+            let cellStyle = '';
+            const hl = h.toLowerCase();
+            if (!isNaN(num)) {
+                if (hl.includes('adv') || hl.includes('up') || hl.includes('+')) cellStyle = 'color:#00e676';
+                else if (hl.includes('dec') || hl.includes('dn') || hl.includes('down') || hl.includes('-')) cellStyle = 'color:#ff5252';
+                else if (num >= 0 && (hl.includes('%') || hl.includes('chg') || hl.includes('change'))) cellStyle = `color:${num >= 0 ? '#00e676' : '#ff5252'}`;
+            }
+            html += `<td${cellStyle ? ` style="${cellStyle}"` : ''}>${val}</td>`;
+        }
+        html += `</tr>`;
+    }
+
+    html += `</tbody></table></div>`;
+    wrapper.innerHTML = html;
+    updateSourceBadge('mbiSource', data.source || 'live');
+}
+
+// ===== USA TICKER TAPE =====
+async function renderUSATicker(stocks) {
+    const container = document.getElementById('kite-ticker');
+    if (!container) return;
+
+    // If no stocks passed, fetch NASDAQ 100
+    if (!stocks || !stocks.length) {
+        try {
+            const res = await fetch('/api/usa/ndx100');
+            if (res.ok) {
+                const data = await res.json();
+                stocks = data.stocks || [];
+            }
+        } catch (e) {
+            console.warn('USA ticker fetch error:', e.message);
+            return;
+        }
+    }
+
+    if (!stocks || !stocks.length) return;
+
+    const buildItems = (list) => list.map(s => {
+        const change = parseFloat(s.change) || 0;
+        const cls = change >= 0 ? 'positive' : 'negative';
+        return `<div class="kite-ticker-item">
+            <span class="ticker-dot ${cls}"></span>
+            <span class="ticker-symbol">${s.symbol}</span>
+            <span class="ticker-price">$${(s.ltp || 0).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2})}</span>
+            <span class="ticker-change ${cls}">${change >= 0 ? '+' : ''}${change.toFixed(2)}%</span>
+        </div>`;
+    }).join('');
+
+    const itemsHtml = buildItems(stocks);
+    container.innerHTML = `<div class="kite-ticker-strip">${itemsHtml}${itemsHtml}</div>`;
+    const strip = container.querySelector('.kite-ticker-strip');
+    if (strip) {
+        const duration = Math.max(40, stocks.length * 1.8);
+        strip.style.animationDuration = duration + 's';
+        strip.offsetWidth;
+        strip.style.animationPlayState = 'running';
+    }
+    tickerBuilt = true;
+}
+
+// ===== USA NEWS =====
+async function fetchUSANews() {
+    try {
+        const res = await fetch('/api/usa/news');
+        if (!res.ok) throw new Error('Failed');
+        const data = await res.json();
+        renderNewsList('marketNewsList', data.items || [], 'market');
+    } catch (e) {
+        console.warn('USA news load failed:', e.message);
+    }
+}
+
+// ===== USA EARNINGS CALENDAR =====
+function renderUSAEarnings(data) {
+    const wrapper = document.getElementById('earningsTableWrapper');
+    if (!wrapper) return;
+
+    const earningsSource = document.getElementById('earningsSource');
+
+    if (!data || data.error || !data.earnings || !data.earnings.length) {
+        wrapper.innerHTML = '<div class="no-data">Earnings data unavailable</div>';
+        return;
+    }
+
+    if (earningsSource) {
+        earningsSource.className = 'source-badge live';
+        earningsSource.innerHTML = '<span class="source-dot"></span> LIVE';
+    }
+
+    const items = data.earnings.slice(0, 15);
+    let html = `<div class="mbi-table-scroll"><table class="mbi-table">
+        <thead><tr>
+            <th>Company</th>
+            <th>Symbol</th>
+            <th>Date</th>
+            <th>EPS Est.</th>
+            <th>Time</th>
+        </tr></thead>
+        <tbody>`;
+
+    for (const e of items) {
+        html += `<tr>
+            <td>${e.companyName || e.name || ''}</td>
+            <td style="font-weight:600;color:#e0e0e0">${e.symbol || ''}</td>
+            <td>${e.date || ''}</td>
+            <td>${e.epsEstimate != null ? (String(e.epsEstimate).startsWith('$') ? e.epsEstimate : '$' + parseFloat(e.epsEstimate).toFixed(2)) : '--'}</td>
+            <td style="opacity:0.7;font-size:0.85em">${e.time || '--'}</td>
+        </tr>`;
+    }
+
+    html += `</tbody></table></div>`;
+    wrapper.innerHTML = html;
 }
