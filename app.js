@@ -912,17 +912,21 @@ function initStockAnalyser() {
     });
 }
 
-async function runAnalysis() {
+async function runAnalysis(tickerArg) {
     const input = document.getElementById('analyserTicker');
     const result = document.getElementById('analyserResult');
-    const ticker = input.value.trim().toUpperCase();
+    const ticker = (tickerArg || input.value).trim().toUpperCase();
     if (!ticker) return;
 
     input.value = ticker;
     result.innerHTML = '<div class="analyser-loading"><div class="spinner"></div><span>Analysing ' + ticker + '...</span></div>';
 
+    const endpoint = (typeof currentMarket !== 'undefined' && currentMarket === 'usa')
+        ? `/api/usa/analyse-stock?symbol=${encodeURIComponent(ticker)}`
+        : `/api/analyse-stock?symbol=${encodeURIComponent(ticker)}`;
+
     try {
-        const res = await fetch(`/api/analyse-stock?symbol=${encodeURIComponent(ticker)}`);
+        const res = await fetch(endpoint);
         const data = await res.json();
 
         if (data.error) {
@@ -939,6 +943,13 @@ async function runAnalysis() {
 function renderAnalysis(data) {
     const result = document.getElementById('analyserResult');
     const passCount = data.checks.filter(c => c.pass).length;
+    const isUSA = data.market === 'usa';
+    const currSymbol = isUSA ? '$' : '\u20B9';
+    const locale = isUSA ? 'en-US' : 'en-IN';
+
+    function fmtPrice(val) {
+        return currSymbol + parseFloat(val).toLocaleString(locale, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
 
     let checksHtml = data.checks.map(c => `
         <div class="check-item ${c.pass ? 'pass' : 'fail'}">
@@ -960,7 +971,7 @@ function renderAnalysis(data) {
                     <div class="analysis-company">${data.companyName}${data.industry ? ' • ' + data.industry : ''}</div>
                 </div>
                 <div class="analysis-price-info">
-                    <div class="analysis-ltp">\u20B9${parseFloat(data.ltp).toLocaleString('en-IN', {minimumFractionDigits:2})}</div>
+                    <div class="analysis-ltp">${fmtPrice(data.ltp)}</div>
                     <div class="analysis-change ${data.pChange >= 0 ? 'positive' : 'negative'}">${data.pChange >= 0 ? '+' : ''}${data.pChange.toFixed(2)}%</div>
                 </div>
             </div>
@@ -981,12 +992,12 @@ function renderAnalysis(data) {
             <div class="analysis-note">${data.minerviniNote}</div>
 
             <div class="analysis-price-levels">
-                <div class="price-level"><span class="pl-label">Open</span><span class="pl-val">\u20B9${parseFloat(data.open).toLocaleString('en-IN')}</span></div>
-                <div class="price-level"><span class="pl-label">High</span><span class="pl-val green">\u20B9${parseFloat(data.high).toLocaleString('en-IN')}</span></div>
-                <div class="price-level"><span class="pl-label">Low</span><span class="pl-val red">\u20B9${parseFloat(data.low).toLocaleString('en-IN')}</span></div>
-                <div class="price-level"><span class="pl-label">Prev Close</span><span class="pl-val">\u20B9${parseFloat(data.prevClose).toLocaleString('en-IN')}</span></div>
-                <div class="price-level"><span class="pl-label">52W High</span><span class="pl-val green">\u20B9${parseFloat(data.yearHigh).toLocaleString('en-IN')}</span></div>
-                <div class="price-level"><span class="pl-label">52W Low</span><span class="pl-val red">\u20B9${parseFloat(data.yearLow).toLocaleString('en-IN')}</span></div>
+                <div class="price-level"><span class="pl-label">Open</span><span class="pl-val">${fmtPrice(data.open)}</span></div>
+                <div class="price-level"><span class="pl-label">High</span><span class="pl-val green">${fmtPrice(data.high)}</span></div>
+                <div class="price-level"><span class="pl-label">Low</span><span class="pl-val red">${fmtPrice(data.low)}</span></div>
+                <div class="price-level"><span class="pl-label">Prev Close</span><span class="pl-val">${fmtPrice(data.prevClose)}</span></div>
+                <div class="price-level"><span class="pl-label">52W High</span><span class="pl-val green">${fmtPrice(data.yearHigh)}</span></div>
+                <div class="price-level"><span class="pl-label">52W Low</span><span class="pl-val red">${fmtPrice(data.yearLow)}</span></div>
             </div>
 
             <div class="analysis-checks-title">SEPA CRITERIA BREAKDOWN</div>
@@ -1135,4 +1146,275 @@ function formatNumber(num) {
     const n = parseFloat(num);
     if (isNaN(n)) return num;
     return n.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+// ================================================================
+// ===== USA MARKET TAB ===========================================
+// ================================================================
+
+let currentMarket = 'india';
+
+function switchMarket(market) {
+    currentMarket = market;
+    document.querySelectorAll('.market-tab').forEach(t => t.classList.toggle('active', t.dataset.market === market));
+
+    if (market === 'india') {
+        // Restore India labels
+        setLabel('kpi-nifty', 'NIFTY 50');
+        setLabel('kpi-banknifty', 'BANK NIFTY');
+        setLabel('kpi-smallcap', 'SMALLCAP');
+        setLabel('kpi-gold', 'GOLD $/oz');
+        setLabel('kpi-usdinr', 'USD/INR');
+        const advDecLabel = document.getElementById('advDecLabel');
+        if (advDecLabel) advDecLabel.firstChild.textContent = 'NIFTY 500 ADV / DEC ';
+        document.getElementById('gainersMarketBadge') && (document.getElementById('gainersMarketBadge').textContent = 'NIFTY 500');
+        document.getElementById('losersMarketBadge') && (document.getElementById('losersMarketBadge').textContent = 'NIFTY 500');
+        document.getElementById('sentimentDetail') && (document.getElementById('sentimentDetail').textContent = 'Nifty vs 21 EMA: Loading...');
+        document.querySelector('.logo-subtitle') && (document.querySelector('.logo-subtitle').textContent = 'Indian Market Intelligence Dashboard');
+        document.getElementById('analyserTicker') && (document.getElementById('analyserTicker').placeholder = 'Ticker — e.g. TRENT (India) or AAPL (USA)');
+        const qp = document.getElementById('analyserQuickPicks');
+        if (qp) resetIndiaQuickPicks();
+        showShimmerLoading();
+        loadAllData();
+    } else {
+        // Set USA labels
+        setLabel('kpi-nifty', 'S&P 500');
+        setLabel('kpi-banknifty', 'NASDAQ 100');
+        setLabel('kpi-smallcap', 'DOW JONES');
+        setLabel('kpi-gold', 'RUSSELL 2000');
+        setLabel('kpi-usdinr', 'VIX / DXY');
+        const advDecLabel = document.getElementById('advDecLabel');
+        if (advDecLabel) advDecLabel.firstChild.textContent = 'S&P 500 ADV / DEC ';
+        document.getElementById('gainersMarketBadge') && (document.getElementById('gainersMarketBadge').textContent = 'S&P 500');
+        document.getElementById('losersMarketBadge') && (document.getElementById('losersMarketBadge').textContent = 'S&P 500');
+        document.querySelector('.logo-subtitle') && (document.querySelector('.logo-subtitle').textContent = 'US Market Intelligence Dashboard');
+        document.getElementById('analyserTicker') && (document.getElementById('analyserTicker').placeholder = 'US TICKER — e.g. AAPL, NVDA, MSFT');
+        const qp = document.getElementById('analyserQuickPicks');
+        if (qp) setUSAQuickPicks();
+        showShimmerLoading();
+        loadUSAData();
+    }
+}
+
+function setLabel(cardId, text) {
+    const card = document.getElementById(cardId);
+    if (card) {
+        const el = card.querySelector('.kpi-index-name');
+        if (el) el.textContent = text;
+    }
+}
+
+function resetIndiaQuickPicks() {
+    const qp = document.getElementById('analyserQuickPicks');
+    if (!qp) return;
+    qp.innerHTML = `
+        <span class="quick-pick" data-ticker="TRENT">TRENT</span>
+        <span class="quick-pick" data-ticker="DIXON">DIXON</span>
+        <span class="quick-pick" data-ticker="PERSISTENT">PERSISTENT</span>
+        <span class="quick-pick" data-ticker="KAYNES">KAYNES</span>
+        <span class="quick-pick" data-ticker="TATAELXSI">TATAELXSI</span>
+    `;
+    initQuickPicks();
+}
+
+function setUSAQuickPicks() {
+    const qp = document.getElementById('analyserQuickPicks');
+    if (!qp) return;
+    qp.innerHTML = `
+        <span class="quick-pick" data-ticker="AAPL">AAPL</span>
+        <span class="quick-pick" data-ticker="NVDA">NVDA</span>
+        <span class="quick-pick" data-ticker="MSFT">MSFT</span>
+        <span class="quick-pick" data-ticker="META">META</span>
+        <span class="quick-pick" data-ticker="GOOGL">GOOGL</span>
+    `;
+    initQuickPicks();
+}
+
+function initQuickPicks() {
+    document.querySelectorAll('#analyserQuickPicks .quick-pick').forEach(el => {
+        el.addEventListener('click', () => {
+            const ticker = el.dataset.ticker;
+            document.getElementById('analyserTicker').value = ticker;
+            runAnalysis(ticker);
+        });
+    });
+}
+
+async function loadUSAData() {
+    try {
+        // Load all USA data in parallel
+        const [marketData, gainersData, losersData, sevenBarData, mbiData] = await Promise.allSettled([
+            fetch('/api/usa/market-data').then(r => r.json()),
+            fetch('/api/usa/gainers').then(r => r.json()),
+            fetch('/api/usa/losers').then(r => r.json()),
+            fetch('/api/usa/seven-bar').then(r => r.json()),
+            fetch('/api/usa/mbi-data').then(r => r.json()),
+        ]);
+
+        if (marketData.status === 'fulfilled') {
+            const d = marketData.value;
+
+            // Index KPIs — S&P 500, Nasdaq, Dow, Russell, VIX/DXY
+            const idx = d.indices || {};
+            renderRawIndexCard('kpi-nifty', idx['SP:SPX']?.price, idx['SP:SPX']?.change, '$', 2);
+            renderRawIndexCard('kpi-banknifty', idx['NASDAQ:NDX']?.price, idx['NASDAQ:NDX']?.change, '$', 2);
+            renderRawIndexCard('kpi-smallcap', idx['DJ:DJI']?.price, idx['DJ:DJI']?.change, '$', 2);
+            renderRawIndexCard('kpi-gold', idx['TVC:RUT']?.price, idx['TVC:RUT']?.change, '$', 2);
+
+            // VIX + DXY in one card
+            const vix = idx['TVC:VIX'];
+            const dxy = idx['TVC:DXY'];
+            if (vix || dxy) {
+                const val = document.getElementById('kpi-usdinr-val');
+                const chg = document.getElementById('kpi-usdinr-chg');
+                if (val) val.textContent = vix ? vix.price.toFixed(2) : '--';
+                if (chg) {
+                    const vixChg = vix ? vix.change : 0;
+                    chg.textContent = `VIX ${vixChg >= 0 ? '+' : ''}${vixChg.toFixed(2)}%${dxy ? ` | DXY ${dxy.price.toFixed(2)}` : ''}`;
+                    chg.className = 'kpi-index-change ' + (vixChg >= 0 ? 'positive' : 'negative');
+                }
+            }
+
+            // Advance/Decline
+            const adv = d.advancing || 0;
+            const dec = d.declining || 0;
+            document.getElementById('advCount').textContent = adv || '--';
+            document.getElementById('decCount').textContent = dec || '--';
+            document.getElementById('advDecRatio').textContent = `Ratio: ${dec > 0 ? (adv / dec).toFixed(2) : '--'} | Unch: ${d.unchanged || 0}`;
+
+            // EMA Breakout Signal (same logic, S&P 500)
+            const ema = d.emaStatus || {};
+            updateBreakoutSignal(ema.status, ema.currentPrice, ema.ema21, ema.ema50, 'S&P 500');
+
+            // Sector Heatmap
+            if (d.sectors && d.sectors.length > 0) renderSectorHeatmap(d.sectors);
+        }
+
+        if (gainersData.status === 'fulfilled') {
+            renderUSAStockList('gainersList', gainersData.value.stocks || [], 'gainers');
+        }
+        if (losersData.status === 'fulfilled') {
+            renderUSAStockList('losersList', losersData.value.stocks || [], 'losers');
+        }
+        if (sevenBarData.status === 'fulfilled') {
+            renderUSASevenBar('sevenBarList', sevenBarData.value.stocks || []);
+        }
+        if (mbiData.status === 'fulfilled') {
+            renderUSAMBI(mbiData.value);
+        }
+    } catch (e) {
+        console.error('USA data load error:', e);
+    }
+}
+
+function renderRawIndexCard(cardId, price, change, prefix, decimals) {
+    prefix = prefix || '';
+    decimals = decimals != null ? decimals : 2;
+    const valEl = document.getElementById(cardId + '-val');
+    const chgEl = document.getElementById(cardId + '-chg');
+    if (!valEl || !chgEl) return;
+    if (price == null || price === 0) { valEl.textContent = '--'; chgEl.textContent = '--'; return; }
+    valEl.textContent = prefix + price.toLocaleString('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+    chgEl.textContent = `${change >= 0 ? '+' : ''}${change.toFixed(2)}%`;
+    chgEl.className = 'kpi-index-change ' + (change >= 0 ? 'positive' : 'negative');
+}
+
+function updateBreakoutSignal(status, price, ema21, ema50, indexName) {
+    const icon = document.getElementById('sentimentIcon');
+    const text = document.getElementById('sentimentText');
+    const detail = document.getElementById('sentimentDetail');
+    const card = document.getElementById('sentimentCard');
+    if (!text) return;
+    if (status === 'yes') {
+        icon.innerHTML = '<i class="fas fa-check-circle"></i>';
+        text.textContent = 'YES — FAVOURABLE';
+        text.style.color = '#00e676';
+        card.style.borderLeftColor = '#00e676';
+        detail.textContent = `${indexName} $${price?.toFixed ? price.toFixed(2) : price} > 21 EMA $${ema21?.toFixed ? ema21.toFixed(2) : ema21} — breakouts are working`;
+    } else if (status === 'selective') {
+        icon.innerHTML = '<i class="fas fa-exclamation-triangle"></i>';
+        text.textContent = 'SELECTIVE — BE CAUTIOUS';
+        text.style.color = '#ffb300';
+        card.style.borderLeftColor = '#ffb300';
+        detail.textContent = `${indexName} below 21 EMA, above 50 EMA — be selective`;
+    } else {
+        icon.innerHTML = '<i class="fas fa-times-circle"></i>';
+        text.textContent = 'NO — AVOID BREAKOUTS';
+        text.style.color = '#ff5252';
+        card.style.borderLeftColor = '#ff5252';
+        detail.textContent = `${indexName} below 50 EMA — breakouts unlikely to work`;
+    }
+}
+
+function renderUSAStockList(containerId, stocks, type) {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+    if (!stocks.length) { container.innerHTML = '<div class="no-data">No data available</div>'; return; }
+    container.innerHTML = stocks.map((s, i) => {
+        const changeClass = s.change >= 0 ? 'positive' : 'negative';
+        const changeSign = s.change >= 0 ? '+' : '';
+        return `
+            <div class="stock-item">
+                <span class="stock-rank">${i + 1}</span>
+                <div class="stock-info">
+                    <div class="stock-symbol">${s.symbol}</div>
+                    <div class="stock-name">${s.name || ''}</div>
+                </div>
+                <div class="stock-price-info">
+                    <div class="stock-ltp">$${(s.ltp || 0).toFixed(2)}</div>
+                    <div class="stock-change ${changeClass}">${changeSign}${(s.change || 0).toFixed(2)}%</div>
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+function renderUSASevenBar(containerId, stocks) {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+    if (!stocks.length) { container.innerHTML = '<div class="no-data">No S&P 500 stocks within 5% of 52-week high</div>'; return; }
+    container.innerHTML = stocks.map((s, i) => {
+        const changeClass = parseFloat(s.dayChange) >= 0 ? 'positive' : 'negative';
+        return `
+            <div class="stock-item seven-bar-item">
+                <span class="stock-rank">${i + 1}</span>
+                <div class="stock-info">
+                    <div class="stock-symbol">${s.symbol}</div>
+                    <div class="stock-name">${s.name || ''}</div>
+                </div>
+                <div class="stock-price-info">
+                    <div class="stock-ltp">$${(s.ltp || 0).toFixed(2)}</div>
+                    <div class="stock-ath-dist">${s.distFromATH}% from ATH</div>
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+function renderUSAMBI(data) {
+    const wrapper = document.getElementById('mbiTableWrapper');
+    if (!wrapper) return;
+    if (!data.rows || data.rows.length === 0) {
+        wrapper.innerHTML = '<div class="mbi-unavailable">USA breadth data unavailable</div>';
+        return;
+    }
+    // Render as table using the headers from the sheet
+    const headers = data.headers || [];
+    const rows = data.rows.slice(0, 20);
+    if (!headers.length) { wrapper.innerHTML = '<div class="mbi-unavailable">No headers found in sheet</div>'; return; }
+
+    const table = `
+        <table class="mbi-table">
+            <thead><tr>${headers.map(h => `<th>${h}</th>`).join('')}</tr></thead>
+            <tbody>${rows.map(row => `<tr>${headers.map(h => {
+                const val = row[h] || '';
+                const num = parseFloat(val);
+                let cls = '';
+                if (!isNaN(num) && h.toLowerCase().includes('adv')) cls = 'positive';
+                else if (!isNaN(num) && h.toLowerCase().includes('dec')) cls = 'negative';
+                return `<td class="${cls}">${val}</td>`;
+            }).join('')}</tr>`).join('')}</tbody>
+        </table>
+    `;
+    wrapper.innerHTML = table;
 }
