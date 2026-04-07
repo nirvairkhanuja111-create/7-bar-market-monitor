@@ -1071,6 +1071,125 @@ async function getTrumpNews() {
 
 
 // ================================================================
+// ===== USA NEWS & EARNINGS =====================================
+// ================================================================
+
+const USA_NEWS_FEEDS = [
+    'https://feeds.finance.yahoo.com/rss/2.0/headline?s=%5EGSPC&region=US&lang=en-US',
+    'https://feeds.finance.yahoo.com/rss/2.0/headline?s=%5EIXIC&region=US&lang=en-US',
+    'https://www.cnbc.com/id/100003114/device/rss/rss.html',
+    'https://feeds.content.dowjones.io/public/rss/mw_topstories',
+];
+
+let usaNewsCache = { data: null, time: 0 };
+const USA_NEWS_CACHE_TTL = 180000; // 3 minutes
+
+async function getUSAMarketNews() {
+    const now = Date.now();
+    if (usaNewsCache.data && (now - usaNewsCache.time) < USA_NEWS_CACHE_TTL) return usaNewsCache.data;
+    let allItems = [];
+    for (const feedUrl of USA_NEWS_FEEDS) {
+        try {
+            const xml = await fetchUrl(feedUrl);
+            const items = parseRSSItems(xml);
+            items.forEach(item => {
+                const t = (item.title || '').toLowerCase();
+                if (t.includes('fed') || t.includes('rate') || t.includes('inflation') || t.includes('gdp')) item.tag = 'FED';
+                else if (t.includes('nasdaq') || t.includes('s&p') || t.includes('dow') || t.includes('stock')) item.tag = 'MARKET';
+                else if (t.includes('earning') || t.includes('profit') || t.includes('revenue')) item.tag = 'EARNINGS';
+                else if (t.includes('tariff') || t.includes('trade') || t.includes('china')) item.tag = 'TRADE';
+                else item.tag = 'US';
+            });
+            allItems = allItems.concat(items);
+        } catch (e) {
+            console.log('USA news feed error:', feedUrl, e.message);
+        }
+    }
+    const seen = new Set();
+    const unique = allItems.filter(item => {
+        const key = (item.title || '').substring(0, 50).toLowerCase();
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+    });
+    unique.sort((a, b) => new Date(b.pubDate || 0) - new Date(a.pubDate || 0));
+    const result = { items: unique.slice(0, 10), source: 'live' };
+    usaNewsCache.data = result;
+    usaNewsCache.time = now;
+    return result;
+}
+
+let usaEarningsCache = { data: null, time: 0 };
+const USA_EARNINGS_CACHE_TTL = 3600000; // 1 hour
+
+async function getUSAEarningsCalendar() {
+    const now = Date.now();
+    if (usaEarningsCache.data && (now - usaEarningsCache.time) < USA_EARNINGS_CACHE_TTL) return usaEarningsCache.data;
+    try {
+        // Use NASDAQ public earnings calendar API — no auth needed
+        const today = new Date().toISOString().slice(0, 10);
+        const url = `https://api.nasdaq.com/api/calendar/earnings?date=${today}`;
+        const raw = await fetchUrl(url, { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' });
+        const json = JSON.parse(raw);
+        const rows = json.data?.rows || [];
+        const earnings = rows.slice(0, 20).map(r => ({
+            symbol: r.symbol || '',
+            companyName: r.name || r.symbol || '',
+            date: today,
+            epsEstimate: r.lastYearEPS || null,
+            time: r.time || '--',
+        })).filter(e => e.symbol);
+        const result = { earnings, source: earnings.length ? 'live' : 'fallback', timestamp: new Date().toISOString() };
+        usaEarningsCache.data = result;
+        usaEarningsCache.time = now;
+        return result;
+    } catch (e) {
+        console.log('USA earnings error:', e.message);
+        return { earnings: [], source: 'fallback', error: e.message };
+    }
+}
+
+// NASDAQ 100 top symbols for ticker tape
+const NDX100_SYMBOLS = [
+    'AAPL','MSFT','NVDA','AMZN','META','GOOGL','TSLA','AVGO','COST','AMD',
+    'NFLX','ADBE','QCOM','INTC','INTU','AMAT','MU','LRCX','KLAC','MRVL',
+    'PANW','SNPS','CDNS','FTNT','CRWD','MELI','ASML','ARM','ABNB','DXCM'
+];
+
+let ndx100Cache = { data: null, time: 0 };
+const NDX100_CACHE_TTL = 60000; // 1 minute
+
+async function fetchNDX100Ticker() {
+    const now = Date.now();
+    if (ndx100Cache.data && (now - ndx100Cache.time) < NDX100_CACHE_TTL) return ndx100Cache.data;
+    try {
+        // Use TradingView symbol-list scan — no auth needed
+        const tickers = NDX100_SYMBOLS.map(s => `NASDAQ:${s}`);
+        const raw = await postJson('https://scanner.tradingview.com/global/scan', {
+            symbols: { tickers, query: { types: [] } },
+            columns: ['close', 'change', 'volume', 'description']
+        });
+        const json = JSON.parse(raw);
+        const stocks = (json.data || []).map(item => {
+            const [close, change, volume, description] = item.d || [];
+            return {
+                symbol: (item.s || '').replace('NASDAQ:', ''),
+                name: description || item.s || '',
+                ltp: close || 0,
+                change: change || 0,
+            };
+        }).filter(s => s.ltp > 0);
+        const result = { stocks, source: stocks.length ? 'live' : 'fallback' };
+        ndx100Cache.data = result;
+        ndx100Cache.time = now;
+        return result;
+    } catch (e) {
+        console.log('NDX100 ticker error:', e.message);
+        return { stocks: [], source: 'fallback', error: e.message };
+    }
+}
+
+// ================================================================
 // ===== USA MARKET DATA ==========================================
 // ================================================================
 
@@ -1812,11 +1931,25 @@ const server = http.createServer(async (req, res) => {
                 'Accept': 'text/csv,text/plain,*/*',
             });
             const lines = csv.trim().split('\n').filter(l => l.trim());
-            // Parse header row to understand column structure
-            const headers = lines[0].split(',').map(h => h.replace(/"/g, '').trim());
+            // Parse header row — only keep first 7 columns (A through G)
+            function parseCSVRow(line) {
+                const result = [];
+                let cur = '', inQuote = false;
+                for (let i = 0; i < line.length; i++) {
+                    const ch = line[i];
+                    if (ch === '"') { inQuote = !inQuote; }
+                    else if (ch === ',' && !inQuote) { result.push(cur.trim()); cur = ''; }
+                    else { cur += ch; }
+                }
+                result.push(cur.trim());
+                return result;
+            }
+            // Row 0 is a section-title row (merged cells); row 1 has actual column headers
+            const allHeaders = parseCSVRow(lines[1] || lines[0]).map(h => h.replace(/"/g, '').trim());
+            const headers = allHeaders.slice(0, 7).filter(h => h);
             const rows = [];
-            for (let i = 1; i < lines.length && rows.length < 30; i++) {
-                const vals = lines[i].split(',').map(v => v.replace(/"/g, '').replace('%', '').trim());
+            for (let i = 2; i < lines.length && rows.length < 30; i++) {
+                const vals = parseCSVRow(lines[i]).map(v => v.replace(/"/g, '').trim());
                 if (!vals[0]) continue;
                 const row = {};
                 headers.forEach((h, idx) => { row[h] = vals[idx] || ''; });
@@ -2003,6 +2136,24 @@ const server = http.createServer(async (req, res) => {
             console.error('USA analyse-stock error:', e.message);
             sendJSON(res, 200, { error: `Could not fetch data for ${symbol}. Make sure it is a valid US ticker (e.g. AAPL, MSFT, NVDA).`, symbol });
         }
+        return;
+    }
+
+    if (pathname === '/api/usa/news') {
+        try { sendJSON(res, 200, await getUSAMarketNews()); }
+        catch (e) { sendJSON(res, 200, { error: e.message, items: [] }); }
+        return;
+    }
+
+    if (pathname === '/api/usa/earnings') {
+        try { sendJSON(res, 200, await getUSAEarningsCalendar()); }
+        catch (e) { sendJSON(res, 200, { error: e.message, earnings: [] }); }
+        return;
+    }
+
+    if (pathname === '/api/usa/ndx100') {
+        try { sendJSON(res, 200, await fetchNDX100Ticker()); }
+        catch (e) { sendJSON(res, 200, { stocks: [], error: e.message }); }
         return;
     }
 
