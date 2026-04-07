@@ -15,5 +15,11 @@
     "refresh": {
         "marketDataInterval": 60000,
         "newsInterval": 300000
+    },
+    "github": {
+        "token": "YOUR_GITHUB_TOKEN_HERE",
+        "owner": "nirvairkhanuja111-create",
+        "repo": "7-bar-market-monitor",
+        "branch": "master"
     }
 }

@@ -143,8 +143,140 @@ function shimmerRows(count = 5) {
     `).join('');
 }
 
+// ===== AUTH =====
+const EMAIL_REGEX = /^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$/;
+
+function isValidEmail(email) { return EMAIL_REGEX.test(email.trim()); }
+
+function initAuthEmailValidation() {
+    const input = document.getElementById('authEmail');
+    const btn = document.getElementById('authSendBtn');
+    const errEl = document.getElementById('authEmailError');
+    if (!input) return;
+
+    function validate() {
+        const val = input.value.trim();
+        if (!val) {
+            input.style.borderColor = '';
+            btn.disabled = true;
+            errEl.textContent = '';
+        } else if (isValidEmail(val)) {
+            input.style.borderColor = '#00e676';
+            btn.disabled = false;
+            errEl.textContent = '';
+        } else {
+            input.style.borderColor = '#ff5252';
+            btn.disabled = true;
+            errEl.textContent = 'Please enter a valid email address.';
+        }
+    }
+
+    input.addEventListener('input', validate);
+    input.addEventListener('blur', validate);
+    // Start with button disabled
+    btn.disabled = true;
+}
+
+async function authCheck() {
+    const token = localStorage.getItem('mm_token');
+    if (!token) return false;
+    try {
+        const r = await fetch('/auth/check', { headers: { 'Authorization': `Bearer ${token}` } });
+        const d = await r.json();
+        return d.valid === true;
+    } catch { return false; }
+}
+
+function authShowOverlay() {
+    document.getElementById('authOverlay').style.display = 'flex';
+    setTimeout(initAuthEmailValidation, 50);
+    setTimeout(() => document.getElementById('authEmail')?.focus(), 100);
+}
+function authHideOverlay() {
+    document.getElementById('authOverlay').style.display = 'none';
+}
+
+async function authRequestOtp() {
+    const email = document.getElementById('authEmail').value.trim();
+    const errEl = document.getElementById('authEmailError');
+    const btn = document.getElementById('authSendBtn');
+    const btnTxt = document.getElementById('authSendBtnText');
+    errEl.textContent = '';
+    if (!isValidEmail(email)) return;
+    btn.disabled = true; btnTxt.textContent = 'SENDING...';
+    try {
+        const r = await fetch('/auth/request-otp', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email })
+        });
+        const d = await r.json();
+        if (!r.ok) { errEl.textContent = d.error || 'Failed to send code.'; btn.disabled = false; btnTxt.textContent = 'SEND CODE'; return; }
+        document.getElementById('authEmailDisplay').textContent = email;
+        document.getElementById('authStepEmail').style.display = 'none';
+        document.getElementById('authStepOtp').style.display = 'block';
+        setTimeout(() => document.getElementById('authOtp').focus(), 100);
+    } catch { errEl.textContent = 'Network error. Please try again.'; }
+    btn.disabled = false; btnTxt.textContent = 'SEND CODE';
+}
+
+async function authVerifyOtp() {
+    const email = document.getElementById('authEmail').value.trim();
+    const otp = document.getElementById('authOtp').value.trim();
+    const errEl = document.getElementById('authOtpError');
+    const btn = document.getElementById('authVerifyBtn');
+    const btnTxt = document.getElementById('authVerifyBtnText');
+    errEl.textContent = '';
+    if (!otp || otp.length < 6) { errEl.textContent = 'Enter the 6-digit code.'; return; }
+    btn.disabled = true; btnTxt.textContent = 'VERIFYING...';
+    try {
+        const r = await fetch('/auth/verify-otp', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email, otp })
+        });
+        const d = await r.json();
+        if (!r.ok) { errEl.textContent = d.error || 'Incorrect code.'; btn.disabled = false; btnTxt.textContent = 'VERIFY & ENTER'; return; }
+        localStorage.setItem('mm_token', d.token);
+        authHideOverlay();
+    } catch { errEl.textContent = 'Network error. Please try again.'; }
+    btn.disabled = false; btnTxt.textContent = 'VERIFY & ENTER';
+}
+
+function authBackToEmail() {
+    document.getElementById('authStepOtp').style.display = 'none';
+    document.getElementById('authStepEmail').style.display = 'block';
+    document.getElementById('authOtp').value = '';
+    document.getElementById('authOtpError').textContent = '';
+}
+
+// Enter key support
+document.addEventListener('keydown', e => {
+    if (e.key === 'Enter') {
+        const overlay = document.getElementById('authOverlay');
+        if (!overlay || overlay.style.display === 'none') return;
+        if (document.getElementById('authStepOtp').style.display !== 'none') authVerifyOtp();
+        else authRequestOtp();
+    }
+});
+
 // ===== INIT =====
-document.addEventListener("DOMContentLoaded", () => {
+document.addEventListener("DOMContentLoaded", async () => {
+    // Auth gate — check session before showing dashboard
+    const valid = await authCheck();
+    if (!valid) {
+        authShowOverlay();
+        // Wait for auth before initialising dashboard
+        const waitForAuth = setInterval(() => {
+            if (document.getElementById('authOverlay').style.display === 'none') {
+                clearInterval(waitForAuth);
+                bootDashboard();
+            }
+        }, 300);
+        return;
+    }
+    bootDashboard();
+});
+
+function bootDashboard() {
     initQuotes();
     initClock();
     initMarketStatus();
@@ -158,10 +290,10 @@ document.addEventListener("DOMContentLoaded", () => {
     // Load all data in parallel
     loadAllData();
 
-    // Auto-refresh
-    setInterval(loadAllData, 60000);
+    // Auto-refresh (market-aware)
+    setInterval(() => { if (currentMarket === 'usa') loadUSAData(); else loadAllData(); }, 60000);
     setInterval(rotateQuote, 20000);
-});
+}
 
 function showShimmerLoading() {
     ['sevenBarList', 'gainersList', 'losersList'].forEach(id => {
@@ -176,10 +308,10 @@ async function loadAllData() {
         const res = await fetch('/api/dashboard');
         if (res.ok) {
             const d = await res.json();
-            // Market data (advance/decline, sentiment, heatmap)
-            if (d.marketData) processMarketData(d.marketData);
-            // Index KPIs
-            if (d.indexQuotes && d.indexQuotes.indices) {
+            // Market data (advance/decline, sentiment, heatmap) — India only
+            if (currentMarket !== 'usa' && d.marketData) processMarketData(d.marketData);
+            // Index KPIs — only update if on India tab
+            if (currentMarket !== 'usa' && d.indexQuotes && d.indexQuotes.indices) {
                 const idx = d.indexQuotes.indices;
                 renderIndexCard('kpi-nifty', idx.nifty);
                 renderIndexCard('kpi-banknifty', idx.banknifty);
@@ -187,23 +319,24 @@ async function loadAllData() {
                 renderIndexCard('kpi-gold', idx.gold);
                 renderIndexCard('kpi-usdinr', idx.usdinr);
             }
-            // Stock columns
-            renderSevenBarList((d.sevenBar && d.sevenBar.stocks) || [], d.sevenBar?.source || 'live');
-            renderGainersList((d.gainers && d.gainers.stocks) || [], d.gainers?.source || 'live');
-            renderLosersList((d.losers && d.losers.stocks) || [], d.losers?.source || 'live');
-            // News
-            renderNewsList('marketNewsList', (d.news && d.news.items) || [], 'market');
-            renderNewsList('trumpNewsList', (d.trumpNews && d.trumpNews.items) || [], 'trump');
+            // Only render India stock/news sections if still on India tab
+            if (currentMarket !== 'usa') {
+                renderSevenBarList((d.sevenBar && d.sevenBar.stocks) || [], d.sevenBar?.source || 'live');
+                renderGainersList((d.gainers && d.gainers.stocks) || [], d.gainers?.source || 'live');
+                renderLosersList((d.losers && d.losers.stocks) || [], d.losers?.source || 'live');
+                renderNewsList('marketNewsList', (d.news && d.news.items) || [], 'market');
+                renderNewsList('trumpNewsList', (d.trumpNews && d.trumpNews.items) || [], 'trump');
+            }
         } else {
             throw new Error('Dashboard fetch failed');
         }
     } catch (e) {
         console.warn('Combined dashboard fetch failed, falling back to individual calls:', e.message);
-        await Promise.all([loadMarketData(), loadStockColumns(), fetchLiveNews(), loadIndexKPIs()]);
+        if (currentMarket !== 'usa') await Promise.all([loadMarketData(), loadStockColumns(), fetchLiveNews(), loadIndexKPIs()]);
     }
 
-    // MBI is separate (Google Sheets, can be slow)
-    loadMBIData();
+    // MBI + India earnings are separate (can be slow)
+    if (currentMarket !== 'usa') { loadMBIData(); fetchIndiaEarnings(); }
 
     document.getElementById("lastUpdated").textContent = new Date().toLocaleTimeString("en-IN", {
         timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit", second: "2-digit"
@@ -332,6 +465,11 @@ async function loadStockColumns() {
     renderLosersList(losersData.stocks || [], losersData.source);
 }
 
+function tvLink(symbol, market) {
+    const exchange = market === 'usa' ? (symbol.length <= 4 ? 'NASDAQ' : 'NYSE') : 'NSE';
+    return `https://www.tradingview.com/chart/?symbol=${exchange}:${symbol}`;
+}
+
 function renderSevenBarList(stocks, source) {
     const container = document.getElementById("sevenBarList");
     if (!stocks.length) { container.innerHTML = '<div class="no-data">No stocks near ATH right now</div>'; return; }
@@ -339,7 +477,7 @@ function renderSevenBarList(stocks, source) {
         <div class="stock-item">
             <span class="stock-rank">${i + 1}</span>
             <div class="stock-info">
-                <div class="stock-name">${s.symbol}</div>
+                <a class="stock-name tv-link" href="${tvLink(s.symbol, 'india')}" target="_blank" title="View on TradingView">${s.symbol} <i class="fas fa-chart-line tv-icon"></i></a>
                 <div class="stock-fullname">${s.name}</div>
             </div>
             <div class="stock-price">
@@ -358,7 +496,7 @@ function renderGainersList(stocks, source) {
         <div class="stock-item">
             <span class="stock-rank">${i + 1}</span>
             <div class="stock-info">
-                <div class="stock-name">${s.symbol}</div>
+                <a class="stock-name tv-link" href="${tvLink(s.symbol, 'india')}" target="_blank" title="View on TradingView">${s.symbol} <i class="fas fa-chart-line tv-icon"></i></a>
                 <div class="stock-fullname">${s.name}</div>
             </div>
             <div class="stock-price">
@@ -377,7 +515,7 @@ function renderLosersList(stocks, source) {
         <div class="stock-item">
             <span class="stock-rank">${i + 1}</span>
             <div class="stock-info">
-                <div class="stock-name">${s.symbol}</div>
+                <a class="stock-name tv-link" href="${tvLink(s.symbol, 'india')}" target="_blank" title="View on TradingView">${s.symbol} <i class="fas fa-chart-line tv-icon"></i></a>
                 <div class="stock-fullname">${s.name}</div>
             </div>
             <div class="stock-price">
@@ -780,17 +918,21 @@ function initStockAnalyser() {
     });
 }
 
-async function runAnalysis() {
+async function runAnalysis(tickerArg) {
     const input = document.getElementById('analyserTicker');
     const result = document.getElementById('analyserResult');
-    const ticker = input.value.trim().toUpperCase();
+    const ticker = (tickerArg || input.value).trim().toUpperCase();
     if (!ticker) return;
 
     input.value = ticker;
     result.innerHTML = '<div class="analyser-loading"><div class="spinner"></div><span>Analysing ' + ticker + '...</span></div>';
 
+    const endpoint = (typeof currentMarket !== 'undefined' && currentMarket === 'usa')
+        ? `/api/usa/analyse-stock?symbol=${encodeURIComponent(ticker)}`
+        : `/api/analyse-stock?symbol=${encodeURIComponent(ticker)}`;
+
     try {
-        const res = await fetch(`/api/analyse-stock?symbol=${encodeURIComponent(ticker)}`);
+        const res = await fetch(endpoint);
         const data = await res.json();
 
         if (data.error) {
@@ -807,6 +949,13 @@ async function runAnalysis() {
 function renderAnalysis(data) {
     const result = document.getElementById('analyserResult');
     const passCount = data.checks.filter(c => c.pass).length;
+    const isUSA = data.market === 'usa';
+    const currSymbol = isUSA ? '$' : '\u20B9';
+    const locale = isUSA ? 'en-US' : 'en-IN';
+
+    function fmtPrice(val) {
+        return currSymbol + parseFloat(val).toLocaleString(locale, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
 
     let checksHtml = data.checks.map(c => `
         <div class="check-item ${c.pass ? 'pass' : 'fail'}">
@@ -828,7 +977,7 @@ function renderAnalysis(data) {
                     <div class="analysis-company">${data.companyName}${data.industry ? ' • ' + data.industry : ''}</div>
                 </div>
                 <div class="analysis-price-info">
-                    <div class="analysis-ltp">\u20B9${parseFloat(data.ltp).toLocaleString('en-IN', {minimumFractionDigits:2})}</div>
+                    <div class="analysis-ltp">${fmtPrice(data.ltp)}</div>
                     <div class="analysis-change ${data.pChange >= 0 ? 'positive' : 'negative'}">${data.pChange >= 0 ? '+' : ''}${data.pChange.toFixed(2)}%</div>
                 </div>
             </div>
@@ -849,12 +998,12 @@ function renderAnalysis(data) {
             <div class="analysis-note">${data.minerviniNote}</div>
 
             <div class="analysis-price-levels">
-                <div class="price-level"><span class="pl-label">Open</span><span class="pl-val">\u20B9${parseFloat(data.open).toLocaleString('en-IN')}</span></div>
-                <div class="price-level"><span class="pl-label">High</span><span class="pl-val green">\u20B9${parseFloat(data.high).toLocaleString('en-IN')}</span></div>
-                <div class="price-level"><span class="pl-label">Low</span><span class="pl-val red">\u20B9${parseFloat(data.low).toLocaleString('en-IN')}</span></div>
-                <div class="price-level"><span class="pl-label">Prev Close</span><span class="pl-val">\u20B9${parseFloat(data.prevClose).toLocaleString('en-IN')}</span></div>
-                <div class="price-level"><span class="pl-label">52W High</span><span class="pl-val green">\u20B9${parseFloat(data.yearHigh).toLocaleString('en-IN')}</span></div>
-                <div class="price-level"><span class="pl-label">52W Low</span><span class="pl-val red">\u20B9${parseFloat(data.yearLow).toLocaleString('en-IN')}</span></div>
+                <div class="price-level"><span class="pl-label">Open</span><span class="pl-val">${fmtPrice(data.open)}</span></div>
+                <div class="price-level"><span class="pl-label">High</span><span class="pl-val green">${fmtPrice(data.high)}</span></div>
+                <div class="price-level"><span class="pl-label">Low</span><span class="pl-val red">${fmtPrice(data.low)}</span></div>
+                <div class="price-level"><span class="pl-label">Prev Close</span><span class="pl-val">${fmtPrice(data.prevClose)}</span></div>
+                <div class="price-level"><span class="pl-label">52W High</span><span class="pl-val green">${fmtPrice(data.yearHigh)}</span></div>
+                <div class="price-level"><span class="pl-label">52W Low</span><span class="pl-val red">${fmtPrice(data.yearLow)}</span></div>
             </div>
 
             <div class="analysis-checks-title">SEPA CRITERIA BREAKDOWN</div>
@@ -1003,4 +1152,531 @@ function formatNumber(num) {
     const n = parseFloat(num);
     if (isNaN(n)) return num;
     return n.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+// ================================================================
+// ===== USA MARKET TAB ===========================================
+// ================================================================
+
+let currentMarket = 'india';
+
+function switchMarket(market) {
+    currentMarket = market;
+    document.querySelectorAll('.market-tab').forEach(t => t.classList.toggle('active', t.dataset.market === market));
+
+    if (market === 'india') {
+        // Restore India labels
+        setLabel('kpi-nifty', 'NIFTY 50');
+        setLabel('kpi-banknifty', 'BANK NIFTY');
+        setLabel('kpi-smallcap', 'SMALLCAP');
+        setLabel('kpi-gold', 'GOLD $/oz');
+        setLabel('kpi-usdinr', 'USD/INR');
+        const advDecLabel = document.getElementById('advDecLabel');
+        if (advDecLabel) advDecLabel.firstChild.textContent = 'NIFTY 500 ADV / DEC ';
+        document.getElementById('gainersMarketBadge') && (document.getElementById('gainersMarketBadge').textContent = 'NIFTY 500');
+        document.getElementById('losersMarketBadge') && (document.getElementById('losersMarketBadge').textContent = 'NIFTY 500');
+        document.getElementById('sentimentDetail') && (document.getElementById('sentimentDetail').textContent = 'Nifty vs 21 EMA: Loading...');
+        document.querySelector('.logo-subtitle') && (document.querySelector('.logo-subtitle').textContent = 'Indian Market Intelligence Dashboard');
+        document.getElementById('analyserTicker') && (document.getElementById('analyserTicker').placeholder = 'Ticker — e.g. TRENT (India) or AAPL (USA)');
+        const qp = document.getElementById('analyserQuickPicks');
+        if (qp) resetIndiaQuickPicks();
+        // Restore India ticker
+        tickerBuilt = false;
+        refreshTicker();
+        showShimmerLoading();
+        loadAllData();
+        fetchIndiaEarnings();
+        // Restore India market news
+        fetchLiveNews();
+    } else {
+        // Set USA labels
+        setLabel('kpi-nifty', 'S&P 500');
+        setLabel('kpi-banknifty', 'NASDAQ 100');
+        setLabel('kpi-smallcap', 'DOW JONES');
+        setLabel('kpi-gold', 'RUSSELL 2000');
+        setLabel('kpi-usdinr', 'VIX / DXY');
+        const advDecLabel = document.getElementById('advDecLabel');
+        if (advDecLabel) advDecLabel.firstChild.textContent = 'S&P 500 ADV / DEC ';
+        document.getElementById('gainersMarketBadge') && (document.getElementById('gainersMarketBadge').textContent = 'S&P 500');
+        document.getElementById('losersMarketBadge') && (document.getElementById('losersMarketBadge').textContent = 'S&P 500');
+        document.querySelector('.logo-subtitle') && (document.querySelector('.logo-subtitle').textContent = 'US Market Intelligence Dashboard');
+        document.getElementById('analyserTicker') && (document.getElementById('analyserTicker').placeholder = 'US TICKER — e.g. AAPL, NVDA, MSFT');
+        const qp = document.getElementById('analyserQuickPicks');
+        if (qp) setUSAQuickPicks();
+        showShimmerLoading();
+        loadUSAData();
+        // Load USA news
+        fetchUSANews();
+    }
+}
+
+function setLabel(cardId, text) {
+    const card = document.getElementById(cardId);
+    if (card) {
+        const el = card.querySelector('.kpi-index-name');
+        if (el) el.textContent = text;
+    }
+}
+
+function resetIndiaQuickPicks() {
+    const qp = document.getElementById('analyserQuickPicks');
+    if (!qp) return;
+    qp.innerHTML = `
+        <span class="quick-pick" data-ticker="TRENT">TRENT</span>
+        <span class="quick-pick" data-ticker="DIXON">DIXON</span>
+        <span class="quick-pick" data-ticker="PERSISTENT">PERSISTENT</span>
+        <span class="quick-pick" data-ticker="KAYNES">KAYNES</span>
+        <span class="quick-pick" data-ticker="TATAELXSI">TATAELXSI</span>
+    `;
+    initQuickPicks();
+}
+
+function setUSAQuickPicks() {
+    const qp = document.getElementById('analyserQuickPicks');
+    if (!qp) return;
+    qp.innerHTML = `
+        <span class="quick-pick" data-ticker="AAPL">AAPL</span>
+        <span class="quick-pick" data-ticker="NVDA">NVDA</span>
+        <span class="quick-pick" data-ticker="MSFT">MSFT</span>
+        <span class="quick-pick" data-ticker="META">META</span>
+        <span class="quick-pick" data-ticker="GOOGL">GOOGL</span>
+    `;
+    initQuickPicks();
+}
+
+function initQuickPicks() {
+    document.querySelectorAll('#analyserQuickPicks .quick-pick').forEach(el => {
+        el.addEventListener('click', () => {
+            const ticker = el.dataset.ticker;
+            document.getElementById('analyserTicker').value = ticker;
+            runAnalysis(ticker);
+        });
+    });
+}
+
+async function loadUSAData() {
+    try {
+        // Load all USA data in parallel
+        const [marketData, gainersData, losersData, sevenBarData, mbiData] = await Promise.allSettled([
+            fetch('/api/usa/market-data').then(r => r.json()),
+            fetch('/api/usa/gainers').then(r => r.json()),
+            fetch('/api/usa/losers').then(r => r.json()),
+            fetch('/api/usa/seven-bar').then(r => r.json()),
+            fetch('/api/usa/mbi-data').then(r => r.json()),
+        ]);
+
+        if (marketData.status === 'fulfilled') {
+            const d = marketData.value;
+
+            // Index KPIs — S&P 500, Nasdaq, Dow, Russell, VIX/DXY
+            const idx = d.indices || {};
+            renderRawIndexCard('kpi-nifty', idx['SP:SPX']?.price, idx['SP:SPX']?.change, '$', 2);
+            renderRawIndexCard('kpi-banknifty', idx['NASDAQ:NDX']?.price, idx['NASDAQ:NDX']?.change, '$', 2);
+            renderRawIndexCard('kpi-smallcap', idx['DJ:DJI']?.price, idx['DJ:DJI']?.change, '$', 2);
+            renderRawIndexCard('kpi-gold', idx['TVC:RUT']?.price, idx['TVC:RUT']?.change, '$', 2);
+
+            // VIX + DXY in one card
+            const vix = idx['TVC:VIX'];
+            const dxy = idx['TVC:DXY'];
+            if (vix || dxy) {
+                const val = document.getElementById('kpi-usdinr-val');
+                const chg = document.getElementById('kpi-usdinr-chg');
+                if (val) val.textContent = vix ? vix.price.toFixed(2) : '--';
+                if (chg) {
+                    const vixChg = vix ? vix.change : 0;
+                    chg.textContent = `VIX ${vixChg >= 0 ? '+' : ''}${vixChg.toFixed(2)}%${dxy ? ` | DXY ${dxy.price.toFixed(2)}` : ''}`;
+                    chg.className = 'kpi-index-change ' + (vixChg >= 0 ? 'positive' : 'negative');
+                }
+            }
+
+            // Advance/Decline
+            const adv = d.advancing || 0;
+            const dec = d.declining || 0;
+            document.getElementById('advCount').textContent = adv || '--';
+            document.getElementById('decCount').textContent = dec || '--';
+            document.getElementById('advDecRatio').textContent = `Ratio: ${dec > 0 ? (adv / dec).toFixed(2) : '--'} | Unch: ${d.unchanged || 0}`;
+
+            // EMA Breakout Signal (same logic, S&P 500)
+            const ema = d.emaStatus || {};
+            updateBreakoutSignal(ema.status, ema.currentPrice, ema.ema21, ema.ema50, 'S&P 500');
+
+            // Sector Heatmap
+            if (d.sectors && d.sectors.length > 0) renderSectorHeatmap(d.sectors);
+        }
+
+        if (gainersData.status === 'fulfilled') {
+            renderUSAStockList('gainersList', gainersData.value.stocks || [], 'gainers');
+        }
+        if (losersData.status === 'fulfilled') {
+            renderUSAStockList('losersList', losersData.value.stocks || [], 'losers');
+        }
+        if (sevenBarData.status === 'fulfilled') {
+            renderUSASevenBar('sevenBarList', sevenBarData.value.stocks || []);
+        }
+        if (mbiData.status === 'fulfilled') {
+            renderUSAMBI(mbiData.value);
+        }
+        // Build NASDAQ 100 ticker tape
+        fetch('/api/usa/ndx100').then(r => r.json()).then(d => renderUSATicker(d.stocks || [])).catch(() => {
+            // fallback to gainers if NDX100 fails
+            if (gainersData.status === 'fulfilled') renderUSATicker(gainersData.value.stocks || []);
+        });
+        // Load earnings calendar
+        fetch('/api/usa/earnings').then(r => r.json()).then(renderUSAEarnings).catch(() => {});
+    } catch (e) {
+        console.error('USA data load error:', e);
+    }
+}
+
+function renderRawIndexCard(cardId, price, change, prefix, decimals) {
+    prefix = prefix || '';
+    decimals = decimals != null ? decimals : 2;
+    const valEl = document.getElementById(cardId + '-val');
+    const chgEl = document.getElementById(cardId + '-chg');
+    if (!valEl || !chgEl) return;
+    if (price == null || price === 0) { valEl.textContent = '--'; chgEl.textContent = '--'; return; }
+    valEl.textContent = prefix + price.toLocaleString('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+    chgEl.textContent = `${change >= 0 ? '+' : ''}${change.toFixed(2)}%`;
+    chgEl.className = 'kpi-index-change ' + (change >= 0 ? 'positive' : 'negative');
+}
+
+function updateBreakoutSignal(status, price, ema21, ema50, indexName) {
+    const icon = document.getElementById('sentimentIcon');
+    const text = document.getElementById('sentimentText');
+    const detail = document.getElementById('sentimentDetail');
+    const card = document.getElementById('sentimentCard');
+    if (!text) return;
+    if (status === 'yes') {
+        icon.innerHTML = '<i class="fas fa-check-circle"></i>';
+        text.textContent = 'YES — FAVOURABLE';
+        text.style.color = '#00e676';
+        card.style.borderLeftColor = '#00e676';
+        detail.textContent = `${indexName} $${price?.toFixed ? price.toFixed(2) : price} > 21 EMA $${ema21?.toFixed ? ema21.toFixed(2) : ema21} — breakouts are working`;
+    } else if (status === 'selective') {
+        icon.innerHTML = '<i class="fas fa-exclamation-triangle"></i>';
+        text.textContent = 'SELECTIVE — BE CAUTIOUS';
+        text.style.color = '#ffb300';
+        card.style.borderLeftColor = '#ffb300';
+        detail.textContent = `${indexName} below 21 EMA, above 50 EMA — be selective`;
+    } else {
+        icon.innerHTML = '<i class="fas fa-times-circle"></i>';
+        text.textContent = 'NO — AVOID BREAKOUTS';
+        text.style.color = '#ff5252';
+        card.style.borderLeftColor = '#ff5252';
+        detail.textContent = `${indexName} below 50 EMA — breakouts unlikely to work`;
+    }
+}
+
+function renderUSAStockList(containerId, stocks, type) {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+    if (!stocks.length) { container.innerHTML = '<div class="no-data">No data available</div>'; return; }
+    container.innerHTML = stocks.map((s, i) => {
+        const change = parseFloat(s.change) || 0;
+        const changeClass = change >= 0 ? 'positive' : 'negative';
+        const changeSign = change >= 0 ? '+' : '';
+        return `
+            <div class="stock-item">
+                <span class="stock-rank">${i + 1}</span>
+                <div class="stock-info">
+                    <a class="stock-name tv-link" href="${tvLink(s.symbol, 'usa')}" target="_blank" title="View on TradingView">${s.symbol} <i class="fas fa-chart-line tv-icon"></i></a>
+                    <div class="stock-fullname">${s.name || ''}</div>
+                </div>
+                <div class="stock-price">
+                    <div class="stock-ltp">$${(s.ltp || 0).toFixed(2)}</div>
+                    <div class="stock-pct ${changeClass}">${changeSign}${change.toFixed(2)}%</div>
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+function renderUSASevenBar(containerId, stocks) {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+    if (!stocks.length) { container.innerHTML = '<div class="no-data">No S&P 500 stocks within 5% of 52-week high</div>'; return; }
+    container.innerHTML = stocks.map((s, i) => {
+        const dayChange = parseFloat(s.dayChange) || 0;
+        const changeClass = dayChange >= 0 ? 'positive' : 'negative';
+        const changeSign = dayChange >= 0 ? '+' : '';
+        return `
+            <div class="stock-item">
+                <span class="stock-rank">${i + 1}</span>
+                <div class="stock-info">
+                    <a class="stock-name tv-link" href="${tvLink(s.symbol, 'usa')}" target="_blank" title="View on TradingView">${s.symbol} <i class="fas fa-chart-line tv-icon"></i></a>
+                    <div class="stock-fullname">${s.name || ''}</div>
+                </div>
+                <div class="stock-price">
+                    <div class="stock-ltp">$${(s.ltp || 0).toFixed(2)}</div>
+                    <div class="stock-pct ${changeClass}">${changeSign}${dayChange.toFixed(2)}%</div>
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+function renderUSAMBI(data) {
+    const wrapper = document.getElementById('mbiTableWrapper');
+    if (!wrapper) return;
+    if (!data.rows || data.rows.length === 0) {
+        wrapper.innerHTML = '<div class="no-data">USA breadth data unavailable</div>';
+        return;
+    }
+    // Use only first 7 columns (A through G)
+    const allHeaders = data.headers || [];
+    const headers = allHeaders.slice(0, 7).filter(h => h && h.trim());
+    const rows = data.rows.slice(0, 20);
+    if (!headers.length) { wrapper.innerHTML = '<div class="no-data">No headers found in sheet</div>'; return; }
+
+    let html = `<div class="mbi-table-scroll"><table class="mbi-table"><thead><tr>`;
+    html += headers.map(h => `<th>${h}</th>`).join('');
+    html += `</tr></thead><tbody>`;
+
+    for (const row of rows) {
+        // Determine row class by first numeric column that might be advance/decline
+        let rowClass = '';
+        const firstVal = parseFloat(row[headers[0]]);
+        if (!isNaN(firstVal)) {
+            // Try to color by context
+        }
+        html += `<tr class="${rowClass}">`;
+        for (const h of headers) {
+            const val = row[h] !== undefined ? row[h] : '';
+            const num = parseFloat(val);
+            let cellStyle = '';
+            const hl = h.toLowerCase();
+            if (!isNaN(num)) {
+                if (hl.includes('adv') || hl.includes('up') || hl.includes('+')) cellStyle = 'color:#00e676';
+                else if (hl.includes('dec') || hl.includes('dn') || hl.includes('down') || hl.includes('-')) cellStyle = 'color:#ff5252';
+                else if (num >= 0 && (hl.includes('%') || hl.includes('chg') || hl.includes('change'))) cellStyle = `color:${num >= 0 ? '#00e676' : '#ff5252'}`;
+            }
+            html += `<td${cellStyle ? ` style="${cellStyle}"` : ''}>${val}</td>`;
+        }
+        html += `</tr>`;
+    }
+
+    html += `</tbody></table></div>`;
+    wrapper.innerHTML = html;
+    updateSourceBadge('mbiSource', data.source || 'live');
+}
+
+// ===== USA TICKER TAPE =====
+async function renderUSATicker(stocks) {
+    const container = document.getElementById('kite-ticker');
+    if (!container) return;
+
+    // If no stocks passed, fetch NASDAQ 100
+    if (!stocks || !stocks.length) {
+        try {
+            const res = await fetch('/api/usa/ndx100');
+            if (res.ok) {
+                const data = await res.json();
+                stocks = data.stocks || [];
+            }
+        } catch (e) {
+            console.warn('USA ticker fetch error:', e.message);
+            return;
+        }
+    }
+
+    if (!stocks || !stocks.length) return;
+
+    const buildItems = (list) => list.map(s => {
+        const change = parseFloat(s.change) || 0;
+        const cls = change >= 0 ? 'positive' : 'negative';
+        return `<div class="kite-ticker-item">
+            <span class="ticker-dot ${cls}"></span>
+            <span class="ticker-symbol">${s.symbol}</span>
+            <span class="ticker-price">$${(s.ltp || 0).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2})}</span>
+            <span class="ticker-change ${cls}">${change >= 0 ? '+' : ''}${change.toFixed(2)}%</span>
+        </div>`;
+    }).join('');
+
+    const itemsHtml = buildItems(stocks);
+    container.innerHTML = `<div class="kite-ticker-strip">${itemsHtml}${itemsHtml}</div>`;
+    const strip = container.querySelector('.kite-ticker-strip');
+    if (strip) {
+        const duration = Math.max(40, stocks.length * 1.8);
+        strip.style.animationDuration = duration + 's';
+        strip.offsetWidth;
+        strip.style.animationPlayState = 'running';
+    }
+    tickerBuilt = true;
+}
+
+// ===== USA NEWS =====
+async function fetchUSANews() {
+    try {
+        const res = await fetch('/api/usa/news');
+        if (!res.ok) throw new Error('Failed');
+        const data = await res.json();
+        renderNewsList('marketNewsList', data.items || [], 'market');
+    } catch (e) {
+        console.warn('USA news load failed:', e.message);
+    }
+}
+
+// ===== INDIA EARNINGS CALENDAR =====
+async function fetchIndiaEarnings() {
+    try {
+        const res = await fetch('/api/india/earnings');
+        if (!res.ok) throw new Error('Failed');
+        const data = await res.json();
+        renderIndiaEarnings(data);
+    } catch (e) {
+        console.warn('India earnings load failed:', e.message);
+    }
+}
+
+function renderIndiaEarnings(data) {
+    const wrapper = document.getElementById('earningsTableWrapper');
+    if (!wrapper) return;
+    const earningsSource = document.getElementById('earningsSource');
+
+    if (!data || !data.earnings || !data.earnings.length) {
+        wrapper.innerHTML = '<div class="no-data">Earnings data unavailable</div>';
+        return;
+    }
+
+    if (earningsSource) {
+        earningsSource.className = 'source-badge live';
+        earningsSource.innerHTML = '<span class="source-dot"></span> LIVE';
+    }
+
+    const items = data.earnings.slice(0, 15);
+    let html = `<div class="mbi-table-scroll"><table class="mbi-table">
+        <thead><tr>
+            <th>Company</th>
+            <th>Symbol</th>
+            <th>Date</th>
+            <th>Event</th>
+        </tr></thead>
+        <tbody>`;
+
+    for (const e of items) {
+        html += `<tr>
+            <td>${e.companyName || ''}</td>
+            <td style="font-weight:600;color:#e0e0e0">${e.symbol || ''}</td>
+            <td>${e.date || ''}</td>
+            <td style="opacity:0.8;font-size:0.85em">${(e.subject || '').replace(/Board Meeting &amp; /i, '').slice(0, 60)}</td>
+        </tr>`;
+    }
+
+    html += `</tbody></table></div>`;
+    wrapper.innerHTML = html;
+}
+
+// ===== USA EARNINGS CALENDAR =====
+function renderUSAEarnings(data) {
+    const wrapper = document.getElementById('earningsTableWrapper');
+    if (!wrapper) return;
+
+    const earningsSource = document.getElementById('earningsSource');
+
+    if (!data || data.error || !data.earnings || !data.earnings.length) {
+        wrapper.innerHTML = '<div class="no-data">Earnings data unavailable</div>';
+        return;
+    }
+
+    if (earningsSource) {
+        earningsSource.className = 'source-badge live';
+        earningsSource.innerHTML = '<span class="source-dot"></span> LIVE';
+    }
+
+    const items = data.earnings.slice(0, 15);
+    let html = `<div class="mbi-table-scroll"><table class="mbi-table">
+        <thead><tr>
+            <th>Company</th>
+            <th>Symbol</th>
+            <th>Date</th>
+            <th>EPS Est.</th>
+            <th>Time</th>
+        </tr></thead>
+        <tbody>`;
+
+    for (const e of items) {
+        html += `<tr>
+            <td>${e.companyName || e.name || ''}</td>
+            <td style="font-weight:600;color:#e0e0e0">${e.symbol || ''}</td>
+            <td>${e.date || ''}</td>
+            <td>${e.epsEstimate != null ? (String(e.epsEstimate).startsWith('$') ? e.epsEstimate : '$' + parseFloat(e.epsEstimate).toFixed(2)) : '--'}</td>
+            <td style="opacity:0.7;font-size:0.85em">${e.time || '--'}</td>
+        </tr>`;
+    }
+
+    html += `</tbody></table></div>`;
+    wrapper.innerHTML = html;
+}
+
+// ===== STAGE ANALYSIS (WEINSTEIN) =====
+(function initStageAnalysis() {
+    document.addEventListener('DOMContentLoaded', () => {
+        const btn = document.getElementById('stageBtn');
+        const input = document.getElementById('stageTicker');
+        if (btn) btn.addEventListener('click', () => runStageAnalysis(input?.value?.trim()));
+        if (input) input.addEventListener('keydown', e => { if (e.key === 'Enter') runStageAnalysis(input.value.trim()); });
+        document.querySelectorAll('#stageQuickPicks .quick-pick').forEach(el => {
+            el.addEventListener('click', () => {
+                if (input) input.value = el.dataset.stageTicker;
+                runStageAnalysis(el.dataset.stageTicker);
+            });
+        });
+    });
+})();
+
+async function runStageAnalysis(ticker) {
+    if (!ticker) return;
+    const market = (typeof currentMarket !== 'undefined' ? currentMarket : 'india');
+    const result = document.getElementById('stageResult');
+    const btn = document.getElementById('stageBtn');
+    if (!result) return;
+
+    result.innerHTML = `<div class="analyser-loading"><div class="spinner"></div><span>Analysing ${ticker}...</span></div>`;
+    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> ANALYSING...'; }
+
+    try {
+        const res = await fetch(`/api/stage-analysis?symbol=${encodeURIComponent(ticker)}&market=${market}`);
+        const d = await res.json();
+        if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-layer-group"></i> ANALYSE STAGE'; }
+        if (d.error) { result.innerHTML = `<div class="analyser-error"><i class="fas fa-exclamation-triangle"></i> ${d.error}</div>`; return; }
+        renderStageResult(d);
+    } catch (e) {
+        if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-layer-group"></i> ANALYSE STAGE'; }
+        result.innerHTML = `<div class="analyser-error"><i class="fas fa-exclamation-triangle"></i> Network error. Try again.</div>`;
+    }
+}
+
+function renderStageResult(d) {
+    const result = document.getElementById('stageResult');
+    if (!result) return;
+    const currency = d.market === 'usa' ? '$' : '₹';
+    const stageColors = { 1: '#ffb300', 2: '#00e676', 3: '#ff9800', 4: '#ff5252' };
+    const color = stageColors[d.stage] || '#e0e0e0';
+    const tvUrl = d.market === 'usa'
+        ? `https://www.tradingview.com/chart/?symbol=NASDAQ:${d.symbol}`
+        : `https://www.tradingview.com/chart/?symbol=NSE:${d.symbol}`;
+
+    result.innerHTML = `
+        <div class="stage-result">
+            <div class="stage-header">
+                <div class="stage-title-area">
+                    <a class="stage-symbol tv-link" href="${tvUrl}" target="_blank">${d.symbol} <i class="fas fa-chart-line tv-icon" style="opacity:1;font-size:11px"></i></a>
+                    <div class="stage-company">${d.name}</div>
+                </div>
+                <div class="stage-badge" style="background:${color}20;border:1px solid ${color};color:${color}">
+                    <span class="stage-number">${d.stageName}</span>
+                    <span class="stage-action">${d.stageAction}</span>
+                </div>
+            </div>
+            <div class="stage-desc">${d.stageDesc}</div>
+            <div class="stage-metrics">
+                <div class="stage-metric"><span class="sm-label">Price</span><span class="sm-val">${currency}${d.ltp?.toLocaleString()}</span></div>
+                <div class="stage-metric"><span class="sm-label">30W MA</span><span class="sm-val">${currency}${d.sma150?.toLocaleString()}</span></div>
+                <div class="stage-metric"><span class="sm-label">10W MA</span><span class="sm-val">${currency}${d.sma50?.toLocaleString()}</span></div>
+                <div class="stage-metric"><span class="sm-label">40W MA</span><span class="sm-val">${currency}${d.sma200?.toLocaleString()}</span></div>
+                <div class="stage-metric"><span class="sm-label">30W Slope</span><span class="sm-val" style="color:${d.slope30W >= 0 ? '#00e676' : '#ff5252'}">${d.slope30W >= 0 ? '+' : ''}${d.slope30W}%</span></div>
+                <div class="stage-metric"><span class="sm-label">From 52W High</span><span class="sm-val" style="color:${d.pctFrom52WH >= -5 ? '#00e676' : '#e0e0e0'}">${d.pctFrom52WH}%</span></div>
+                <div class="stage-metric"><span class="sm-label">Vol Ratio</span><span class="sm-val" style="color:${d.volRatio >= 1.2 ? '#00e676' : '#e0e0e0'}">${d.volRatio}x</span></div>
+            </div>
+        </div>`;
 }

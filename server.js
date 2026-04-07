@@ -3,6 +3,8 @@ const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
+const crypto = require('crypto');
+const nodemailer = require('nodemailer');
 
 const KiteClient = require('./kite-client');
 
@@ -36,6 +38,43 @@ if (kiteConfig.enabled && kiteConfig.apiKey) {
     console.log('  ℹ️  Kite Connect disabled (set KITE_ENABLED=true or kite.enabled=true in config.json)');
 }
 
+// ===== AUTH — OTP + SESSION =====
+const otpStore = new Map();     // email -> { otp, expiry, attempts }
+const sessionStore = new Map(); // token -> { email, expiry }
+
+const emailCfg = config.email || {};
+const emailTransporter = (emailCfg.user && emailCfg.pass)
+    ? nodemailer.createTransport({ service: emailCfg.service || 'gmail', auth: { user: emailCfg.user, pass: emailCfg.pass } })
+    : null;
+
+function generateOtp() { return String(Math.floor(100000 + Math.random() * 900000)); }
+function generateToken() { return crypto.randomBytes(32).toString('hex'); }
+
+async function sendOtpEmail(email, otp) {
+    if (!emailTransporter) {
+        // Dev mode — print to console
+        console.log(`\n  🔑 OTP for ${email}: ${otp}  (no email config — dev mode)\n`);
+        return;
+    }
+    await emailTransporter.sendMail({
+        from: `"Market Monitor" <${emailCfg.user}>`,
+        to: email,
+        subject: 'Your Market Monitor Access Code',
+        html: `
+            <div style="font-family:Inter,sans-serif;background:#0a0e1a;color:#e0e0e0;padding:40px;border-radius:12px;max-width:480px;margin:0 auto">
+                <h2 style="color:#00e676;margin:0 0 8px">Market Monitor</h2>
+                <p style="color:#888;margin:0 0 32px;font-size:13px">Indian Market Intelligence Dashboard</p>
+                <p style="margin:0 0 16px">Your one-time access code is:</p>
+                <div style="background:#141824;border:1px solid #00e676;border-radius:8px;padding:24px;text-align:center;letter-spacing:12px;font-size:36px;font-weight:700;color:#00e676;font-family:monospace">
+                    ${otp}
+                </div>
+                <p style="color:#888;font-size:12px;margin:24px 0 0">This code expires in 10 minutes. Do not share it with anyone.</p>
+            </div>
+        `
+    });
+}
+
+// ===== MIME TYPES =====
 const MIME_TYPES = {
     '.html': 'text/html',
     '.css': 'text/css',
@@ -1032,6 +1071,375 @@ async function getTrumpNews() {
 
 
 // ================================================================
+// ===== USA NEWS & EARNINGS =====================================
+// ================================================================
+
+const USA_NEWS_FEEDS = [
+    'https://feeds.finance.yahoo.com/rss/2.0/headline?s=%5EGSPC&region=US&lang=en-US',
+    'https://feeds.finance.yahoo.com/rss/2.0/headline?s=%5EIXIC&region=US&lang=en-US',
+    'https://www.cnbc.com/id/100003114/device/rss/rss.html',
+    'https://feeds.content.dowjones.io/public/rss/mw_topstories',
+];
+
+let usaNewsCache = { data: null, time: 0 };
+const USA_NEWS_CACHE_TTL = 180000; // 3 minutes
+
+async function getUSAMarketNews() {
+    const now = Date.now();
+    if (usaNewsCache.data && (now - usaNewsCache.time) < USA_NEWS_CACHE_TTL) return usaNewsCache.data;
+    let allItems = [];
+    for (const feedUrl of USA_NEWS_FEEDS) {
+        try {
+            const xml = await fetchUrl(feedUrl);
+            const items = parseRSSItems(xml);
+            items.forEach(item => {
+                const t = (item.title || '').toLowerCase();
+                if (t.includes('fed') || t.includes('rate') || t.includes('inflation') || t.includes('gdp')) item.tag = 'FED';
+                else if (t.includes('nasdaq') || t.includes('s&p') || t.includes('dow') || t.includes('stock')) item.tag = 'MARKET';
+                else if (t.includes('earning') || t.includes('profit') || t.includes('revenue')) item.tag = 'EARNINGS';
+                else if (t.includes('tariff') || t.includes('trade') || t.includes('china')) item.tag = 'TRADE';
+                else item.tag = 'US';
+            });
+            allItems = allItems.concat(items);
+        } catch (e) {
+            console.log('USA news feed error:', feedUrl, e.message);
+        }
+    }
+    const seen = new Set();
+    const unique = allItems.filter(item => {
+        const key = (item.title || '').substring(0, 50).toLowerCase();
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+    });
+    unique.sort((a, b) => new Date(b.pubDate || 0) - new Date(a.pubDate || 0));
+    const result = { items: unique.slice(0, 10), source: 'live' };
+    usaNewsCache.data = result;
+    usaNewsCache.time = now;
+    return result;
+}
+
+let usaEarningsCache = { data: null, time: 0 };
+const USA_EARNINGS_CACHE_TTL = 3600000; // 1 hour
+
+// ================================================================
+// ===== INDIA EARNINGS CALENDAR ==================================
+// ================================================================
+
+let indiaEarningsCache = { data: null, time: 0 };
+const INDIA_EARNINGS_CACHE_TTL = 1800000; // 30 min
+
+async function getIndiaEarningsCalendar() {
+    const now = Date.now();
+    if (indiaEarningsCache.data && (now - indiaEarningsCache.time) < INDIA_EARNINGS_CACHE_TTL) return indiaEarningsCache.data;
+    try {
+        // Try board meetings endpoint first, then fall back to event calendar
+        let events = [];
+        try {
+            events = await fetchNSE('/api/boardMeetings?status=upcoming');
+            if (!Array.isArray(events)) events = events.data || [];
+        } catch (e1) {
+            try {
+                const cal = await fetchNSE('/api/event-calendar');
+                events = Array.isArray(cal) ? cal : [];
+            } catch (e2) { events = []; }
+        }
+
+        const today = new Date();
+        const earnings = events
+            .filter(e => {
+                // Accept financial results, board meetings, or any quarterly/annual event
+                const subj = (e.subject || e.bm_desc || e.purpose || '').toLowerCase();
+                return subj.includes('result') || subj.includes('dividend') ||
+                       subj.includes('agm') || subj.includes('board') || subj.includes('financial');
+            })
+            .filter(e => {
+                const dateStr = e.date || e.bm_date || '';
+                if (!dateStr) return false;
+                // NSE dates: "DD-MMM-YYYY" or "YYYY-MM-DD"
+                const d = new Date(dateStr);
+                if (isNaN(d)) return true; // include if can't parse
+                const diff = (d - today) / 86400000;
+                return diff >= -1 && diff <= 30;
+            })
+            .slice(0, 20)
+            .map(e => ({
+                symbol: e.symbol || '',
+                companyName: e.company || e.companyName || e.symbol || '',
+                date: e.date || e.bm_date || '',
+                subject: e.subject || e.bm_desc || e.purpose || '',
+                time: '--',
+            }));
+        const result = { earnings, source: earnings.length ? 'live' : 'fallback', timestamp: new Date().toISOString() };
+        indiaEarningsCache.data = result;
+        indiaEarningsCache.time = now;
+        return result;
+    } catch (e) {
+        console.log('India earnings error:', e.message);
+        return { earnings: [], source: 'fallback', error: e.message };
+    }
+}
+
+async function getUSAEarningsCalendar() {
+    const now = Date.now();
+    if (usaEarningsCache.data && (now - usaEarningsCache.time) < USA_EARNINGS_CACHE_TTL) return usaEarningsCache.data;
+    try {
+        // Use NASDAQ public earnings calendar API — no auth needed
+        const today = new Date().toISOString().slice(0, 10);
+        const url = `https://api.nasdaq.com/api/calendar/earnings?date=${today}`;
+        const raw = await fetchUrl(url, { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' });
+        const json = JSON.parse(raw);
+        const rows = json.data?.rows || [];
+        const earnings = rows.slice(0, 20).map(r => ({
+            symbol: r.symbol || '',
+            companyName: r.name || r.symbol || '',
+            date: today,
+            epsEstimate: r.lastYearEPS || null,
+            time: r.time || '--',
+        })).filter(e => e.symbol);
+        const result = { earnings, source: earnings.length ? 'live' : 'fallback', timestamp: new Date().toISOString() };
+        usaEarningsCache.data = result;
+        usaEarningsCache.time = now;
+        return result;
+    } catch (e) {
+        console.log('USA earnings error:', e.message);
+        return { earnings: [], source: 'fallback', error: e.message };
+    }
+}
+
+// NASDAQ 100 top symbols for ticker tape
+const NDX100_SYMBOLS = [
+    'AAPL','MSFT','NVDA','AMZN','META','GOOGL','TSLA','AVGO','COST','AMD',
+    'NFLX','ADBE','QCOM','INTC','INTU','AMAT','MU','LRCX','KLAC','MRVL',
+    'PANW','SNPS','CDNS','FTNT','CRWD','MELI','ASML','ARM','ABNB','DXCM'
+];
+
+let ndx100Cache = { data: null, time: 0 };
+const NDX100_CACHE_TTL = 60000; // 1 minute
+
+async function fetchNDX100Ticker() {
+    const now = Date.now();
+    if (ndx100Cache.data && (now - ndx100Cache.time) < NDX100_CACHE_TTL) return ndx100Cache.data;
+    try {
+        // Use TradingView symbol-list scan — no auth needed
+        const tickers = NDX100_SYMBOLS.map(s => `NASDAQ:${s}`);
+        const raw = await postJson('https://scanner.tradingview.com/global/scan', {
+            symbols: { tickers, query: { types: [] } },
+            columns: ['close', 'change', 'volume', 'description']
+        });
+        const json = JSON.parse(raw);
+        const stocks = (json.data || []).map(item => {
+            const [close, change, volume, description] = item.d || [];
+            return {
+                symbol: (item.s || '').replace('NASDAQ:', ''),
+                name: description || item.s || '',
+                ltp: close || 0,
+                change: change || 0,
+            };
+        }).filter(s => s.ltp > 0);
+        const result = { stocks, source: stocks.length ? 'live' : 'fallback' };
+        ndx100Cache.data = result;
+        ndx100Cache.time = now;
+        return result;
+    } catch (e) {
+        console.log('NDX100 ticker error:', e.message);
+        return { stocks: [], source: 'fallback', error: e.message };
+    }
+}
+
+// ================================================================
+// ===== USA MARKET DATA ==========================================
+// ================================================================
+
+const usaCache = {};
+const USA_CACHE_TTL = 30000; // 30s
+
+// USA indices via TradingView global scanner
+async function fetchUSAIndices() {
+    const now = Date.now();
+    if (usaCache.indices && (now - usaCache.indices.time) < USA_CACHE_TTL) return usaCache.indices.data;
+    const raw = await postJson('https://scanner.tradingview.com/global/scan', {
+        symbols: { tickers: ['SP:SPX', 'NASDAQ:NDX', 'DJ:DJI', 'TVC:RUT', 'TVC:VIX', 'TVC:DXY'] },
+        columns: ['close', 'change', 'change_abs', 'open', 'high', 'low']
+    });
+    const json = JSON.parse(raw);
+    const nameMap = { 'SP:SPX': 'S&P 500', 'NASDAQ:NDX': 'Nasdaq 100', 'DJ:DJI': 'Dow Jones', 'TVC:RUT': 'Russell 2000', 'TVC:VIX': 'VIX', 'TVC:DXY': 'DXY' };
+    const result = {};
+    for (const item of (json.data || [])) {
+        const [close, changePct, changeAbs, open, high, low] = item.d;
+        result[item.s] = { name: nameMap[item.s] || item.s, price: close || 0, change: changePct || 0, open: open || 0, high: high || 0, low: low || 0 };
+    }
+    usaCache.indices = { data: result, time: now };
+    return result;
+}
+
+// USA sectors via SPDR ETFs through TradingView
+const US_SECTOR_ETFS = {
+    'AMEX:XLK': { name: 'Tech', fullName: 'Technology' },
+    'AMEX:XLV': { name: 'Health', fullName: 'Healthcare' },
+    'AMEX:XLF': { name: 'Financials', fullName: 'Financials' },
+    'AMEX:XLY': { name: 'Cons. Disc', fullName: 'Consumer Discretionary' },
+    'AMEX:XLP': { name: 'Staples', fullName: 'Consumer Staples' },
+    'AMEX:XLE': { name: 'Energy', fullName: 'Energy' },
+    'AMEX:XLB': { name: 'Materials', fullName: 'Materials' },
+    'AMEX:XLI': { name: 'Industrials', fullName: 'Industrials' },
+    'AMEX:XLU': { name: 'Utilities', fullName: 'Utilities' },
+    'AMEX:XLRE': { name: 'Real Estate', fullName: 'Real Estate' },
+    'AMEX:XLC': { name: 'Comm. Svcs', fullName: 'Communication Services' },
+};
+
+async function fetchUSASectors() {
+    const now = Date.now();
+    if (usaCache.sectors && (now - usaCache.sectors.time) < USA_CACHE_TTL) return usaCache.sectors.data;
+    const tickers = Object.keys(US_SECTOR_ETFS);
+    const raw = await postJson('https://scanner.tradingview.com/global/scan', {
+        symbols: { tickers },
+        columns: ['close', 'change', 'change_abs', 'open', 'high', 'low']
+    });
+    const json = JSON.parse(raw);
+    const sectors = [];
+    for (const item of (json.data || [])) {
+        const meta = US_SECTOR_ETFS[item.s];
+        if (!meta) continue;
+        const [close, changePct] = item.d;
+        sectors.push({ name: meta.name, fullName: meta.fullName, change: changePct || 0, last: close || 0 });
+    }
+    sectors.sort((a, b) => b.change - a.change);
+    usaCache.sectors = { data: sectors, time: now };
+    return sectors;
+}
+
+// USA gainers/losers from S&P 500 via TradingView
+async function fetchUSAGainersLosers() {
+    const now = Date.now();
+    if (usaCache.gl && (now - usaCache.gl.time) < USA_CACHE_TTL) return usaCache.gl.data;
+    // Fetch top 200 by gain/loss, filter to NYSE/NASDAQ only (OTC foreign ADRs excluded)
+    const [rawG, rawL] = await Promise.all([
+        postJson('https://scanner.tradingview.com/america/scan', {
+            filter: [{ left: 'market_cap_basic', operation: 'greater', right: 2000000000 }],
+            columns: ['name', 'description', 'close', 'change', 'volume'],
+            sort: { sortBy: 'change', sortOrder: 'desc' },
+            range: [0, 200]
+        }),
+        postJson('https://scanner.tradingview.com/america/scan', {
+            filter: [{ left: 'market_cap_basic', operation: 'greater', right: 2000000000 }],
+            columns: ['name', 'description', 'close', 'change', 'volume'],
+            sort: { sortBy: 'change', sortOrder: 'asc' },
+            range: [0, 200]
+        })
+    ]);
+    // Only keep NYSE/NASDAQ listed stocks, exclude preferred shares (symbol contains /)
+    function parseUSStocks(raw) {
+        return (JSON.parse(raw).data || [])
+            .filter(item => /^(NYSE:|NASDAQ:|AMEX:)/.test(item.s || '') && !item.s.includes('/'))
+            .map(item => {
+                const [symbol, desc, close, change, volume] = item.d;
+                return {
+                    symbol: (item.s || '').replace(/^(NASDAQ:|NYSE:|AMEX:)/, ''),
+                    name: desc || symbol || '',
+                    ltp: close || 0, change: change || 0, volume: volume || 0
+                };
+            });
+    }
+    const gainers = parseUSStocks(rawG).filter(s => s.change > 0).slice(0, 10);
+    const losers = parseUSStocks(rawL).filter(s => s.change < 0).slice(0, 10);
+    const result = { gainers, losers };
+    usaCache.gl = { data: result, time: now };
+    return result;
+}
+
+// USA 7-bar stocks (near 52-week high within S&P 500)
+async function fetchUSASevenBar() {
+    const now = Date.now();
+    if (usaCache.sevenBar && (now - usaCache.sevenBar.time) < USA_CACHE_TTL) return usaCache.sevenBar.data;
+    const raw = await postJson('https://scanner.tradingview.com/america/scan', {
+        filter: [{ left: 'market_cap_basic', operation: 'greater', right: 5000000000 }],
+        columns: ['name', 'description', 'close', 'change', 'price_52_week_high', 'price_52_week_low', 'volume'],
+        sort: { sortBy: 'name', sortOrder: 'asc' },
+        range: [0, 503]
+    });
+    const json = JSON.parse(raw);
+    const stocks = (json.data || [])
+        .filter(item => /^(NYSE:|NASDAQ:|AMEX:)/.test(item.s || ''))
+        .map(item => {
+            const [symbol, desc, close, change, weekHigh] = item.d;
+            if (!weekHigh || !close || weekHigh <= 0) return null;
+            const distFromHigh = ((weekHigh - close) / weekHigh) * 100;
+            return {
+                symbol: (item.s || '').replace(/^(NASDAQ:|NYSE:|AMEX:)/, ''),
+                name: desc || symbol || '',
+                ltp: close, change: change || 0,
+                ath: weekHigh, distFromATH: parseFloat(distFromHigh.toFixed(2)),
+                dayChange: (change || 0).toFixed(2)
+            };
+        })
+        .filter(s => s && s.distFromATH >= 0 && s.distFromATH <= 5)
+        .sort((a, b) => a.distFromATH - b.distFromATH)
+        .slice(0, 15);
+    usaCache.sevenBar = { data: { stocks, source: 'live' }, time: now };
+    return usaCache.sevenBar.data;
+}
+
+// S&P 500 EMA status via Yahoo Finance historical data
+async function getSPXEMAStatus() {
+    const now = Date.now();
+    if (usaCache.ema && (now - usaCache.ema.time) < 60 * 60 * 1000) return usaCache.ema.data;
+    try {
+        const raw = await fetchUrl('https://query1.finance.yahoo.com/v8/finance/chart/%5EGSPC?interval=1d&range=4mo');
+        const json = JSON.parse(raw);
+        const closes = (json.chart?.result?.[0]?.indicators?.quote?.[0]?.close || []).filter(c => c != null);
+        if (closes.length < 50) throw new Error('Not enough data');
+        function calcEMA(data, period) {
+            const k = 2 / (period + 1);
+            let ema = data.slice(0, period).reduce((a, b) => a + b, 0) / period;
+            for (let i = period; i < data.length; i++) ema = data[i] * k + ema * (1 - k);
+            return ema;
+        }
+        const currentPrice = closes[closes.length - 1];
+        const ema21 = calcEMA(closes, 21);
+        const ema50 = calcEMA(closes, 50);
+        let status;
+        if (currentPrice > ema21) status = 'yes';
+        else if (currentPrice > ema50) status = 'selective';
+        else status = 'no';
+        const result = { status, currentPrice: parseFloat(currentPrice.toFixed(2)), ema21: parseFloat(ema21.toFixed(2)), ema50: parseFloat(ema50.toFixed(2)), index: 'S&P 500' };
+        usaCache.ema = { data: result, time: now };
+        return result;
+    } catch (e) {
+        console.log('SPX EMA error:', e.message);
+        return { status: 'no', currentPrice: 0, ema21: 0, ema50: 0, index: 'S&P 500' };
+    }
+}
+
+// USA A/D ratio (computed from S&P 500 stocks via TradingView)
+async function fetchUSAAdvDec() {
+    const now = Date.now();
+    if (usaCache.advDec && (now - usaCache.advDec.time) < USA_CACHE_TTL) return usaCache.advDec.data;
+    try {
+        const raw = await postJson('https://scanner.tradingview.com/america/scan', {
+            filter: [
+                { left: 'market_cap_basic', operation: 'greater', right: 2000000000 }
+            ],
+            columns: ['change'],
+            range: [0, 503]
+        });
+        const json = JSON.parse(raw);
+        let advancing = 0, declining = 0, unchanged = 0;
+        for (const item of (json.data || [])) {
+            const change = item.d[0] || 0;
+            if (change > 0.01) advancing++;
+            else if (change < -0.01) declining++;
+            else unchanged++;
+        }
+        const result = { advancing, declining, unchanged };
+        usaCache.advDec = { data: result, time: now };
+        return result;
+    } catch (e) {
+        return { advancing: 0, declining: 0, unchanged: 0 };
+    }
+}
+
+// ================================================================
 // ===== HTTP SERVER ==============================================
 // ================================================================
 
@@ -1403,7 +1811,7 @@ const server = http.createServer(async (req, res) => {
                 pass: closeInUpperHalf,
                 value: bullishCandle ? `Bullish candle (O:₹${open.toLocaleString('en-IN')} → C:₹${ltp.toLocaleString('en-IN')})` : `Bearish candle (O:₹${open.toLocaleString('en-IN')} → C:₹${ltp.toLocaleString('en-IN')})`,
                 detail: closeInUpperHalf
-                    ? 'Closing in upper half of range — buyers in control'
+                    ? 'Closing in upper half of range — demand in control'
                     : 'Closing in lower half — sellers dominant today',
                 weight: closeInUpperHalf ? 10 : 0,
             });
@@ -1528,6 +1936,393 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
+    // ===== USA Market Data =====
+    if (pathname === '/api/usa/market-data') {
+        try {
+            const [indices, emaStatus, advDec, sectors] = await Promise.allSettled([
+                fetchUSAIndices(),
+                getSPXEMAStatus(),
+                fetchUSAAdvDec(),
+                fetchUSASectors()
+            ]);
+            sendJSON(res, 200, {
+                indices: indices.status === 'fulfilled' ? indices.value : {},
+                emaStatus: emaStatus.status === 'fulfilled' ? emaStatus.value : { status: 'no', currentPrice: 0, ema21: 0, ema50: 0 },
+                advancing: advDec.status === 'fulfilled' ? advDec.value.advancing : 0,
+                declining: advDec.status === 'fulfilled' ? advDec.value.declining : 0,
+                unchanged: advDec.status === 'fulfilled' ? advDec.value.unchanged : 0,
+                sectors: sectors.status === 'fulfilled' ? sectors.value : [],
+                timestamp: new Date().toISOString()
+            });
+        } catch (e) { sendJSON(res, 200, { error: e.message }); }
+        return;
+    }
+
+    if (pathname === '/api/usa/gainers') {
+        try {
+            const { gainers } = await fetchUSAGainersLosers();
+            sendJSON(res, 200, { source: 'live', stocks: gainers, timestamp: new Date().toISOString() });
+        } catch (e) { sendJSON(res, 200, { error: e.message, stocks: [] }); }
+        return;
+    }
+
+    if (pathname === '/api/usa/losers') {
+        try {
+            const { losers } = await fetchUSAGainersLosers();
+            sendJSON(res, 200, { source: 'live', stocks: losers, timestamp: new Date().toISOString() });
+        } catch (e) { sendJSON(res, 200, { error: e.message, stocks: [] }); }
+        return;
+    }
+
+    if (pathname === '/api/usa/seven-bar') {
+        try {
+            sendJSON(res, 200, await fetchUSASevenBar());
+        } catch (e) { sendJSON(res, 200, { error: e.message, stocks: [] }); }
+        return;
+    }
+
+    if (pathname === '/api/usa/mbi-data') {
+        try {
+            const sheetUrl = 'https://docs.google.com/spreadsheets/d/1O6OhS7ciA8zwfycBfGPbP2fWJnR0pn2UUvFZVDP9jpE/export?format=csv&gid=1082103394';
+            const csv = await fetchUrlWithHeaders(sheetUrl, {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/csv,text/plain,*/*',
+            });
+            const lines = csv.trim().split('\n').filter(l => l.trim());
+            // Parse header row — only keep first 7 columns (A through G)
+            function parseCSVRow(line) {
+                const result = [];
+                let cur = '', inQuote = false;
+                for (let i = 0; i < line.length; i++) {
+                    const ch = line[i];
+                    if (ch === '"') { inQuote = !inQuote; }
+                    else if (ch === ',' && !inQuote) { result.push(cur.trim()); cur = ''; }
+                    else { cur += ch; }
+                }
+                result.push(cur.trim());
+                return result;
+            }
+            // Row 0 is a section-title row (merged cells); row 1 has actual column headers
+            const allHeaders = parseCSVRow(lines[1] || lines[0]).map(h => h.replace(/"/g, '').trim());
+            const headers = allHeaders.slice(0, 7).filter(h => h);
+            const rows = [];
+            for (let i = 2; i < lines.length && rows.length < 30; i++) {
+                const vals = parseCSVRow(lines[i]).map(v => v.replace(/"/g, '').trim());
+                if (!vals[0]) continue;
+                const row = {};
+                headers.forEach((h, idx) => { row[h] = vals[idx] || ''; });
+                rows.push(row);
+            }
+            sendJSON(res, 200, { source: 'live', rows, headers, total: rows.length, timestamp: new Date().toISOString() });
+        } catch (e) {
+            console.error('USA MBI error:', e.message);
+            sendJSON(res, 200, { source: 'fallback', rows: [], error: e.message });
+        }
+        return;
+    }
+
+    if (pathname === '/api/stage-analysis') {
+        const symbol = (parsedUrl.searchParams.get('symbol') || '').toUpperCase().trim();
+        const market = parsedUrl.searchParams.get('market') || 'india';
+        if (!symbol) { sendJSON(res, 200, { error: 'No symbol provided' }); return; }
+        try {
+            const yhSymbol = market === 'india' ? `${symbol}.NS` : symbol;
+            const url = `https://query1.finance.yahoo.com/v8/finance/chart/${yhSymbol}?interval=1d&range=2y`;
+            const raw = await fetchUrl(url);
+            const json = JSON.parse(raw);
+            const result = json.chart?.result?.[0];
+            if (!result) throw new Error('No data returned');
+
+            const rawCloses = result.indicators.quote[0].close;
+            const rawVolumes = result.indicators.quote[0].volume;
+            const closes = rawCloses.filter(Boolean);
+            const volumes = rawVolumes.map(v => v || 0);
+
+            if (closes.length < 100) throw new Error('Insufficient price history');
+
+            const meta = result.meta || {};
+            const name = meta.longName || meta.shortName || symbol;
+            const ltp = closes[closes.length - 1];
+
+            // Compute SMAs
+            function sma(arr, period) {
+                const out = [];
+                for (let i = 0; i < arr.length; i++) {
+                    if (i < period - 1) { out.push(null); continue; }
+                    const slice = arr.slice(i - period + 1, i + 1);
+                    out.push(slice.reduce((a, b) => a + b, 0) / period);
+                }
+                return out;
+            }
+
+            const sma150 = sma(closes, 150); // ~30 weeks
+            const sma50  = sma(closes, 50);  // ~10 weeks
+            const sma200 = sma(closes, 200); // 40 weeks
+
+            const cur150 = sma150[sma150.length - 1];
+            const cur50  = sma50[sma50.length - 1];
+            const cur200 = sma200[sma200.length - 1];
+
+            // Slope of 30W SMA over last 4 weeks (20 trading days)
+            const prev150 = sma150[sma150.length - 21] || cur150;
+            const slope150pct = ((cur150 - prev150) / prev150) * 100;
+
+            // Volume: avg 50-day vs recent 10-day
+            const vol50avg = volumes.slice(-50).reduce((a, b) => a + b, 0) / 50;
+            const vol10avg = volumes.slice(-10).reduce((a, b) => a + b, 0) / 10;
+            const volRatio = vol50avg > 0 ? vol10avg / vol50avg : 1;
+
+            // 52-week high/low
+            const yearCloses = closes.slice(-252);
+            const yearHigh = Math.max(...yearCloses);
+            const yearLow  = Math.min(...yearCloses);
+            const pctFrom52WH = ((ltp - yearHigh) / yearHigh) * 100;
+
+            // Stage determination (Weinstein)
+            const aboveSMA150 = ltp > cur150;
+            const rising150   = slope150pct > 0.3;
+            const flat150     = Math.abs(slope150pct) <= 0.3;
+            const falling150  = slope150pct < -0.3;
+
+            let stage, stageName, stageClass, stageAction, stageDesc;
+            if (aboveSMA150 && rising150 && ltp > cur50) {
+                stage = 2; stageName = 'STAGE 2'; stageClass = 'stage-2';
+                stageAction = 'ADVANCING';
+                stageDesc = 'Price is above a rising 30-week MA. Classic Mark-Up phase. Look for pullbacks to 10W MA for entry or VCP patterns near new highs.';
+            } else if (aboveSMA150 && (flat150 || falling150)) {
+                stage = 3; stageName = 'STAGE 3'; stageClass = 'stage-3';
+                stageAction = 'TOPPING';
+                stageDesc = 'Price near a flattening/declining 30-week MA after an advance. Distribution phase. Avoid new longs; reduce existing positions.';
+            } else if (!aboveSMA150 && falling150) {
+                stage = 4; stageName = 'STAGE 4'; stageClass = 'stage-4';
+                stageAction = 'DECLINING';
+                stageDesc = 'Price below a declining 30-week MA. Mark-Down phase. Do not buy — wait for Stage 1 base to form before considering.';
+            } else {
+                stage = 1; stageName = 'STAGE 1'; stageClass = 'stage-1';
+                stageAction = 'BASING';
+                stageDesc = 'Price consolidating near a flattening 30-week MA. Accumulation phase. Watch for a volume-backed breakout above the base to confirm Stage 2.';
+            }
+
+            sendJSON(res, 200, {
+                symbol, name, market, ltp: parseFloat(ltp.toFixed(2)),
+                stage, stageName, stageClass, stageAction, stageDesc,
+                sma150: parseFloat((cur150 || 0).toFixed(2)),
+                sma50:  parseFloat((cur50  || 0).toFixed(2)),
+                sma200: parseFloat((cur200 || 0).toFixed(2)),
+                slope30W: parseFloat(slope150pct.toFixed(2)),
+                volRatio: parseFloat(volRatio.toFixed(2)),
+                yearHigh: parseFloat(yearHigh.toFixed(2)),
+                yearLow:  parseFloat(yearLow.toFixed(2)),
+                pctFrom52WH: parseFloat(pctFrom52WH.toFixed(2)),
+                timestamp: new Date().toISOString()
+            });
+        } catch (e) {
+            const suffix = market === 'india' ? ' (use NSE symbol e.g. RELIANCE, INFY)' : ' (use US ticker e.g. AAPL, NVDA)';
+            sendJSON(res, 200, { error: `Could not fetch data for ${symbol}.${suffix}`, symbol });
+        }
+        return;
+    }
+
+    if (pathname === '/api/usa/analyse-stock') {
+        const symbol = (parsedUrl.searchParams.get('symbol') || '').toUpperCase().trim();
+        if (!symbol) { sendJSON(res, 200, { error: 'No symbol provided' }); return; }
+        try {
+            // Fetch stock data from Yahoo Finance
+            const [stockRaw, spxRaw] = await Promise.all([
+                fetchUrl(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=1y`),
+                fetchUrl('https://query1.finance.yahoo.com/v8/finance/chart/%5EGSPC?interval=1d&range=1y')
+            ]);
+            const stockJson = JSON.parse(stockRaw);
+            const spxJson = JSON.parse(spxRaw);
+
+            const result = stockJson.chart?.result?.[0];
+            if (!result) { sendJSON(res, 200, { error: `${symbol} not found on Yahoo Finance` }); return; }
+
+            const meta = result.meta || {};
+            const closes = (result.indicators?.quote?.[0]?.close || []).filter(c => c != null);
+            const volumes = (result.indicators?.quote?.[0]?.volume || []).filter(v => v != null);
+
+            const ltp = meta.regularMarketPrice || closes[closes.length - 1] || 0;
+            const prevClose = meta.regularMarketPreviousClose || 0;
+            const open = meta.regularMarketOpen || 0;
+            const high = meta.regularMarketDayHigh || 0;
+            const low = meta.regularMarketDayLow || 0;
+            const yearHigh = meta.fiftyTwoWeekHigh || 0;
+            const yearLow = meta.fiftyTwoWeekLow || 0;
+            const volume = meta.regularMarketVolume || 0;
+            const avgVolume10d = meta.averageDailyVolume10Day || meta.averageDailyVolume3Month || 0;
+            const companyName = meta.longName || meta.shortName || symbol;
+            const pChange = prevClose ? ((ltp - prevClose) / prevClose * 100) : 0;
+
+            // SPX data for relative strength
+            const spxCloses = (spxJson.chart?.result?.[0]?.indicators?.quote?.[0]?.close || []).filter(c => c != null);
+            const spxChange = spxCloses.length >= 63
+                ? ((spxCloses[spxCloses.length - 1] - spxCloses[spxCloses.length - 63]) / spxCloses[spxCloses.length - 63] * 100)
+                : 0;
+            const stockChange3m = closes.length >= 63
+                ? ((closes[closes.length - 1] - closes[closes.length - 63]) / closes[closes.length - 63] * 100)
+                : 0;
+
+            // Compute SMAs
+            function sma(data, n) {
+                if (data.length < n) return null;
+                return data.slice(-n).reduce((a, b) => a + b, 0) / n;
+            }
+            const sma50 = sma(closes, 50);
+            const sma150 = sma(closes, 150);
+            const sma200 = sma(closes, Math.min(200, closes.length));
+
+            const checks = [];
+            let score = 0;
+
+            // Check 1: Price above key SMAs (Trend Template)
+            const aboveSma50 = sma50 && ltp > sma50;
+            const aboveSma200 = sma200 && ltp > sma200;
+            const sma50aboveSma200 = sma50 && sma200 && sma50 > sma200;
+            const trendPass = aboveSma50 && aboveSma200 && sma50aboveSma200;
+            const trendWeight = trendPass ? 20 : (aboveSma50 ? 8 : (aboveSma200 ? 4 : 0));
+            checks.push({
+                name: 'Trend Template (Price vs SMAs)',
+                pass: trendPass,
+                value: sma50 ? `Price $${ltp.toFixed(2)} | 50-SMA $${sma50.toFixed(2)} | 200-SMA $${sma200 ? sma200.toFixed(2) : 'N/A'}` : 'Insufficient history',
+                detail: trendPass ? 'Price above 50 and 200-day SMA, 50 above 200 — full trend template satisfied'
+                    : aboveSma50 ? 'Above 50-SMA but not all trend conditions met'
+                    : 'Price below key moving averages — not in an uptrend',
+                weight: trendWeight
+            });
+            score += trendWeight;
+
+            // Check 2: 52-Week High Proximity
+            const distFrom52WH = yearHigh > 0 ? ((yearHigh - ltp) / yearHigh * 100) : 100;
+            const highPass = distFrom52WH <= 25;
+            const highWeight = distFrom52WH <= 5 ? 20 : distFrom52WH <= 15 ? 15 : distFrom52WH <= 25 ? 8 : 0;
+            checks.push({
+                name: '52-Week High Proximity',
+                pass: highPass,
+                value: `$${ltp.toFixed(2)} | 52W High $${yearHigh.toFixed(2)} | ${distFrom52WH.toFixed(1)}% below high`,
+                detail: distFrom52WH <= 5 ? 'Within 5% of 52-week high — ideal Minervini zone'
+                    : distFrom52WH <= 15 ? 'Within 15% of 52-week high — acceptable range'
+                    : distFrom52WH <= 25 ? 'Within 25% of 52-week high — watch for setup'
+                    : 'Too far from 52-week high — stock is in decline',
+                weight: highWeight
+            });
+            score += highWeight;
+
+            // Check 3: Relative Strength vs S&P 500 (3-month)
+            const rsPass = stockChange3m > spxChange;
+            const rsWeight = stockChange3m > spxChange + 10 ? 20 : stockChange3m > spxChange ? 12 : stockChange3m > spxChange - 5 ? 5 : 0;
+            checks.push({
+                name: 'Relative Strength vs S&P 500',
+                pass: rsPass,
+                value: `Stock 3M: ${stockChange3m.toFixed(1)}% | S&P 500 3M: ${spxChange.toFixed(1)}%`,
+                detail: rsPass
+                    ? `Outperforming S&P 500 by ${(stockChange3m - spxChange).toFixed(1)}% — strong relative strength`
+                    : `Underperforming S&P 500 by ${(spxChange - stockChange3m).toFixed(1)}% — weak RS`,
+                weight: rsWeight
+            });
+            score += rsWeight;
+
+            // Check 4: Volume (current vs 10-day avg)
+            const volPass = avgVolume10d > 0 && volume > avgVolume10d * 0.8;
+            const volWeight = volume > avgVolume10d * 1.5 ? 15 : volume > avgVolume10d ? 10 : volPass ? 5 : 0;
+            checks.push({
+                name: 'Volume Analysis',
+                pass: volPass,
+                value: `Vol: ${(volume / 1e6).toFixed(1)}M | 10-day avg: ${(avgVolume10d / 1e6).toFixed(1)}M`,
+                detail: volume > avgVolume10d * 1.5 ? 'Volume significantly above average — strong institutional interest'
+                    : volume > avgVolume10d ? 'Volume above average — healthy trading activity'
+                    : 'Volume below average — limited institutional participation',
+                weight: volWeight
+            });
+            score += volWeight;
+
+            // Check 5: Stage Analysis (Weinstein)
+            const aboveLow = yearLow > 0 ? ((ltp - yearLow) / (yearHigh - yearLow) * 100) : 0;
+            let stage = 'Unknown';
+            if (distFrom52WH <= 10 && aboveLow >= 50) stage = 'Stage 2 — Advancing';
+            else if (distFrom52WH <= 25 && aboveLow >= 30) stage = 'Stage 2 — Early/Mid Advance';
+            else if (distFrom52WH > 25 && distFrom52WH <= 50 && aboveLow >= 20) stage = 'Stage 1 — Basing (Watch for breakout)';
+            else if (distFrom52WH > 50) stage = 'Stage 4 — Declining (AVOID)';
+            else stage = 'Stage 3 — Topping / Distribution';
+            const isStage2 = stage.includes('Stage 2');
+            const stageWeight = isStage2 ? 15 : (stage.includes('Stage 1') ? 5 : 0);
+            checks.push({
+                name: 'Weinstein Stage Analysis',
+                pass: isStage2,
+                value: stage,
+                detail: isStage2 ? 'Stock is in the ideal stage per Stan Weinstein'
+                    : stage.includes('Stage 1') ? 'Building a base — not ready yet, add to watchlist'
+                    : 'Not in the right zone — Minervini only trades Stage 2 stocks',
+                weight: stageWeight
+            });
+            score += stageWeight;
+
+            // Check 6: 52-week range position (breakout readiness)
+            const rangePosition = yearHigh > yearLow ? ((ltp - yearLow) / (yearHigh - yearLow) * 100) : 50;
+            const breakoutPass = rangePosition >= 70;
+            const breakoutWeight = rangePosition >= 90 ? 10 : rangePosition >= 70 ? 7 : rangePosition >= 50 ? 3 : 0;
+            checks.push({
+                name: 'Breakout Readiness',
+                pass: breakoutPass,
+                value: `${rangePosition.toFixed(0)}% of 52-week range | 52W Low $${yearLow.toFixed(2)}`,
+                detail: rangePosition >= 90 ? 'Near top of 52-week range — prime breakout territory'
+                    : rangePosition >= 70 ? 'In upper half of range — well-positioned for breakout'
+                    : 'Mid-range or below — not in breakout position',
+                weight: breakoutWeight
+            });
+            score += breakoutWeight;
+
+            // Overall verdict
+            let verdict, verdictClass;
+            if (score >= 70) { verdict = 'STRONG CANDIDATE'; verdictClass = 'strong-candidate'; }
+            else if (score >= 50) { verdict = 'WATCHLIST — WAIT FOR SETUP'; verdictClass = 'watchlist'; }
+            else if (score >= 30) { verdict = 'WEAK — NOT IDEAL FOR SWING'; verdictClass = 'weak'; }
+            else { verdict = 'AVOID — DOES NOT MEET CRITERIA'; verdictClass = 'avoid'; }
+
+            sendJSON(res, 200, {
+                symbol, companyName, industry: meta.exchange || 'US Stock',
+                ltp: parseFloat(ltp.toFixed(2)), pChange: parseFloat(pChange.toFixed(2)),
+                open: parseFloat(open.toFixed(2)), high: parseFloat(high.toFixed(2)),
+                low: parseFloat(low.toFixed(2)), prevClose: parseFloat(prevClose.toFixed(2)),
+                yearHigh: parseFloat(yearHigh.toFixed(2)), yearLow: parseFloat(yearLow.toFixed(2)),
+                score, verdict, verdictClass, checks,
+                minerviniNote: score >= 50
+                    ? 'This stock shows characteristics that Minervini looks for: proximity to new highs, relative strength, and proper stage positioning. Look for a VCP or tight consolidation near pivot for entry.'
+                    : 'This stock currently does not meet Minervini\'s SEPA criteria. Either wait for it to set up properly or look for better candidates near 52-week highs with strong relative strength.',
+                market: 'usa',
+                timestamp: new Date().toISOString()
+            });
+        } catch (e) {
+            console.error('USA analyse-stock error:', e.message);
+            sendJSON(res, 200, { error: `Could not fetch data for ${symbol}. Make sure it is a valid US ticker (e.g. AAPL, MSFT, NVDA).`, symbol });
+        }
+        return;
+    }
+
+    if (pathname === '/api/usa/news') {
+        try { sendJSON(res, 200, await getUSAMarketNews()); }
+        catch (e) { sendJSON(res, 200, { error: e.message, items: [] }); }
+        return;
+    }
+
+    if (pathname === '/api/usa/earnings') {
+        try { sendJSON(res, 200, await getUSAEarningsCalendar()); }
+        catch (e) { sendJSON(res, 200, { error: e.message, earnings: [] }); }
+        return;
+    }
+
+    if (pathname === '/api/india/earnings') {
+        try { sendJSON(res, 200, await getIndiaEarningsCalendar()); }
+        catch (e) { sendJSON(res, 200, { error: e.message, earnings: [] }); }
+        return;
+    }
+
+    if (pathname === '/api/usa/ndx100') {
+        try { sendJSON(res, 200, await fetchNDX100Ticker()); }
+        catch (e) { sendJSON(res, 200, { stocks: [], error: e.message }); }
+        return;
+    }
+
     // ===== News Endpoints =====
 
     if (pathname === '/api/news') {
@@ -1539,6 +2334,70 @@ const server = http.createServer(async (req, res) => {
     if (pathname === '/api/trump-news') {
         try { sendJSON(res, 200, await getTrumpNews()); }
         catch (e) { sendJSON(res, 200, { error: e.message, items: [] }); }
+        return;
+    }
+
+    // ===== AUTH — Request OTP =====
+    if (pathname === '/auth/request-otp' && req.method === 'POST') {
+        let body = '';
+        req.on('data', d => body += d);
+        req.on('end', async () => {
+            try {
+                const { email } = JSON.parse(body);
+                if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+                    sendJSON(res, 400, { error: 'Invalid email address' }); return;
+                }
+                const existing = otpStore.get(email);
+                if (existing && existing.expiry > Date.now() && existing.attempts >= 5) {
+                    sendJSON(res, 429, { error: 'Too many attempts. Try again in 10 minutes.' }); return;
+                }
+                const otp = generateOtp();
+                otpStore.set(email, { otp, expiry: Date.now() + 10 * 60 * 1000, attempts: 0 });
+                await sendOtpEmail(email, otp);
+                sendJSON(res, 200, { success: true, message: 'Code sent to your email' });
+            } catch (e) {
+                console.error('OTP send error:', e.message);
+                sendJSON(res, 500, { error: 'Failed to send email. Check server email config.' });
+            }
+        });
+        return;
+    }
+
+    // ===== AUTH — Verify OTP =====
+    if (pathname === '/auth/verify-otp' && req.method === 'POST') {
+        let body = '';
+        req.on('data', d => body += d);
+        req.on('end', () => {
+            try {
+                const { email, otp } = JSON.parse(body);
+                const record = otpStore.get(email);
+                if (!record) { sendJSON(res, 401, { error: 'No code requested for this email' }); return; }
+                if (Date.now() > record.expiry) { otpStore.delete(email); sendJSON(res, 401, { error: 'Code expired. Request a new one.' }); return; }
+                record.attempts++;
+                if (record.otp !== String(otp).trim()) {
+                    sendJSON(res, 401, { error: `Incorrect code. ${5 - record.attempts} attempts left.` }); return;
+                }
+                otpStore.delete(email);
+                const token = generateToken();
+                sessionStore.set(token, { email, expiry: Date.now() + 24 * 60 * 60 * 1000 });
+                sendJSON(res, 200, { success: true, token, email });
+            } catch (e) {
+                sendJSON(res, 400, { error: 'Invalid request' });
+            }
+        });
+        return;
+    }
+
+    // ===== AUTH — Check Session =====
+    if (pathname === '/auth/check') {
+        const token = (req.headers['authorization'] || '').replace('Bearer ', '');
+        const session = sessionStore.get(token);
+        if (session && session.expiry > Date.now()) {
+            sendJSON(res, 200, { valid: true, email: session.email });
+        } else {
+            if (token) sessionStore.delete(token);
+            sendJSON(res, 401, { valid: false });
+        }
         return;
     }
 
@@ -1687,7 +2546,7 @@ const server = http.createServer(async (req, res) => {
             } else { res.writeHead(500); res.end('Server Error'); }
         } else {
             const acceptGzip = (req.headers['accept-encoding'] || '').includes('gzip');
-            const headers = { 'Content-Type': contentType, 'Cache-Control': ext === '.html' ? 'no-cache' : 'public, max-age=3600' };
+            const headers = { 'Content-Type': contentType, 'Cache-Control': 'no-cache' };
             if (compressible && acceptGzip && data.length > 1024) {
                 zlib.gzip(data, (err2, compressed) => {
                     if (err2) { res.writeHead(200, headers); res.end(data); return; }

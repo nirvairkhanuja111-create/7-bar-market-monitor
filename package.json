@@ -6,6 +6,8 @@
     "dev": "node server.js",
     "start": "node server.js"
   },
-  "dependencies": {},
-  "devDependencies": {}
+  "dependencies": {
+    "exceljs": "^4.4.0",
+    "nodemailer": "^8.0.3"
+  }
 }
