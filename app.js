@@ -335,8 +335,8 @@ async function loadAllData() {
         if (currentMarket !== 'usa') await Promise.all([loadMarketData(), loadStockColumns(), fetchLiveNews(), loadIndexKPIs()]);
     }
 
-    // MBI is separate (Google Sheets, can be slow)
-    if (currentMarket !== 'usa') loadMBIData();
+    // MBI + India earnings are separate (can be slow)
+    if (currentMarket !== 'usa') { loadMBIData(); fetchIndiaEarnings(); }
 
     document.getElementById("lastUpdated").textContent = new Date().toLocaleTimeString("en-IN", {
         timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit", second: "2-digit"
@@ -465,6 +465,11 @@ async function loadStockColumns() {
     renderLosersList(losersData.stocks || [], losersData.source);
 }
 
+function tvLink(symbol, market) {
+    const exchange = market === 'usa' ? (symbol.length <= 4 ? 'NASDAQ' : 'NYSE') : 'NSE';
+    return `https://www.tradingview.com/chart/?symbol=${exchange}:${symbol}`;
+}
+
 function renderSevenBarList(stocks, source) {
     const container = document.getElementById("sevenBarList");
     if (!stocks.length) { container.innerHTML = '<div class="no-data">No stocks near ATH right now</div>'; return; }
@@ -472,7 +477,7 @@ function renderSevenBarList(stocks, source) {
         <div class="stock-item">
             <span class="stock-rank">${i + 1}</span>
             <div class="stock-info">
-                <div class="stock-name">${s.symbol}</div>
+                <a class="stock-name tv-link" href="${tvLink(s.symbol, 'india')}" target="_blank" title="View on TradingView">${s.symbol} <i class="fas fa-chart-line tv-icon"></i></a>
                 <div class="stock-fullname">${s.name}</div>
             </div>
             <div class="stock-price">
@@ -491,7 +496,7 @@ function renderGainersList(stocks, source) {
         <div class="stock-item">
             <span class="stock-rank">${i + 1}</span>
             <div class="stock-info">
-                <div class="stock-name">${s.symbol}</div>
+                <a class="stock-name tv-link" href="${tvLink(s.symbol, 'india')}" target="_blank" title="View on TradingView">${s.symbol} <i class="fas fa-chart-line tv-icon"></i></a>
                 <div class="stock-fullname">${s.name}</div>
             </div>
             <div class="stock-price">
@@ -510,7 +515,7 @@ function renderLosersList(stocks, source) {
         <div class="stock-item">
             <span class="stock-rank">${i + 1}</span>
             <div class="stock-info">
-                <div class="stock-name">${s.symbol}</div>
+                <a class="stock-name tv-link" href="${tvLink(s.symbol, 'india')}" target="_blank" title="View on TradingView">${s.symbol} <i class="fas fa-chart-line tv-icon"></i></a>
                 <div class="stock-fullname">${s.name}</div>
             </div>
             <div class="stock-price">
@@ -1178,11 +1183,9 @@ function switchMarket(market) {
         // Restore India ticker
         tickerBuilt = false;
         refreshTicker();
-        // Hide earnings section
-        const earningsSection = document.getElementById('earningsSection');
-        if (earningsSection) earningsSection.style.display = 'none';
         showShimmerLoading();
         loadAllData();
+        fetchIndiaEarnings();
         // Restore India market news
         fetchLiveNews();
     } else {
@@ -1200,9 +1203,6 @@ function switchMarket(market) {
         document.getElementById('analyserTicker') && (document.getElementById('analyserTicker').placeholder = 'US TICKER — e.g. AAPL, NVDA, MSFT');
         const qp = document.getElementById('analyserQuickPicks');
         if (qp) setUSAQuickPicks();
-        // Show earnings section
-        const earningsSection = document.getElementById('earningsSection');
-        if (earningsSection) earningsSection.style.display = 'block';
         showShimmerLoading();
         loadUSAData();
         // Load USA news
@@ -1379,7 +1379,7 @@ function renderUSAStockList(containerId, stocks, type) {
             <div class="stock-item">
                 <span class="stock-rank">${i + 1}</span>
                 <div class="stock-info">
-                    <div class="stock-name">${s.symbol}</div>
+                    <a class="stock-name tv-link" href="${tvLink(s.symbol, 'usa')}" target="_blank" title="View on TradingView">${s.symbol} <i class="fas fa-chart-line tv-icon"></i></a>
                     <div class="stock-fullname">${s.name || ''}</div>
                 </div>
                 <div class="stock-price">
@@ -1403,7 +1403,7 @@ function renderUSASevenBar(containerId, stocks) {
             <div class="stock-item">
                 <span class="stock-rank">${i + 1}</span>
                 <div class="stock-info">
-                    <div class="stock-name">${s.symbol}</div>
+                    <a class="stock-name tv-link" href="${tvLink(s.symbol, 'usa')}" target="_blank" title="View on TradingView">${s.symbol} <i class="fas fa-chart-line tv-icon"></i></a>
                     <div class="stock-fullname">${s.name || ''}</div>
                 </div>
                 <div class="stock-price">
@@ -1516,6 +1516,56 @@ async function fetchUSANews() {
     }
 }
 
+// ===== INDIA EARNINGS CALENDAR =====
+async function fetchIndiaEarnings() {
+    try {
+        const res = await fetch('/api/india/earnings');
+        if (!res.ok) throw new Error('Failed');
+        const data = await res.json();
+        renderIndiaEarnings(data);
+    } catch (e) {
+        console.warn('India earnings load failed:', e.message);
+    }
+}
+
+function renderIndiaEarnings(data) {
+    const wrapper = document.getElementById('earningsTableWrapper');
+    if (!wrapper) return;
+    const earningsSource = document.getElementById('earningsSource');
+
+    if (!data || !data.earnings || !data.earnings.length) {
+        wrapper.innerHTML = '<div class="no-data">Earnings data unavailable</div>';
+        return;
+    }
+
+    if (earningsSource) {
+        earningsSource.className = 'source-badge live';
+        earningsSource.innerHTML = '<span class="source-dot"></span> LIVE';
+    }
+
+    const items = data.earnings.slice(0, 15);
+    let html = `<div class="mbi-table-scroll"><table class="mbi-table">
+        <thead><tr>
+            <th>Company</th>
+            <th>Symbol</th>
+            <th>Date</th>
+            <th>Event</th>
+        </tr></thead>
+        <tbody>`;
+
+    for (const e of items) {
+        html += `<tr>
+            <td>${e.companyName || ''}</td>
+            <td style="font-weight:600;color:#e0e0e0">${e.symbol || ''}</td>
+            <td>${e.date || ''}</td>
+            <td style="opacity:0.8;font-size:0.85em">${(e.subject || '').replace(/Board Meeting &amp; /i, '').slice(0, 60)}</td>
+        </tr>`;
+    }
+
+    html += `</tbody></table></div>`;
+    wrapper.innerHTML = html;
+}
+
 // ===== USA EARNINGS CALENDAR =====
 function renderUSAEarnings(data) {
     const wrapper = document.getElementById('earningsTableWrapper');
@@ -1556,4 +1606,77 @@ function renderUSAEarnings(data) {
 
     html += `</tbody></table></div>`;
     wrapper.innerHTML = html;
+}
+
+// ===== STAGE ANALYSIS (WEINSTEIN) =====
+(function initStageAnalysis() {
+    document.addEventListener('DOMContentLoaded', () => {
+        const btn = document.getElementById('stageBtn');
+        const input = document.getElementById('stageTicker');
+        if (btn) btn.addEventListener('click', () => runStageAnalysis(input?.value?.trim()));
+        if (input) input.addEventListener('keydown', e => { if (e.key === 'Enter') runStageAnalysis(input.value.trim()); });
+        document.querySelectorAll('#stageQuickPicks .quick-pick').forEach(el => {
+            el.addEventListener('click', () => {
+                if (input) input.value = el.dataset.stageTicker;
+                runStageAnalysis(el.dataset.stageTicker);
+            });
+        });
+    });
+})();
+
+async function runStageAnalysis(ticker) {
+    if (!ticker) return;
+    const market = (typeof currentMarket !== 'undefined' ? currentMarket : 'india');
+    const result = document.getElementById('stageResult');
+    const btn = document.getElementById('stageBtn');
+    if (!result) return;
+
+    result.innerHTML = `<div class="analyser-loading"><div class="spinner"></div><span>Analysing ${ticker}...</span></div>`;
+    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> ANALYSING...'; }
+
+    try {
+        const res = await fetch(`/api/stage-analysis?symbol=${encodeURIComponent(ticker)}&market=${market}`);
+        const d = await res.json();
+        if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-layer-group"></i> ANALYSE STAGE'; }
+        if (d.error) { result.innerHTML = `<div class="analyser-error"><i class="fas fa-exclamation-triangle"></i> ${d.error}</div>`; return; }
+        renderStageResult(d);
+    } catch (e) {
+        if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-layer-group"></i> ANALYSE STAGE'; }
+        result.innerHTML = `<div class="analyser-error"><i class="fas fa-exclamation-triangle"></i> Network error. Try again.</div>`;
+    }
+}
+
+function renderStageResult(d) {
+    const result = document.getElementById('stageResult');
+    if (!result) return;
+    const currency = d.market === 'usa' ? '$' : '₹';
+    const stageColors = { 1: '#ffb300', 2: '#00e676', 3: '#ff9800', 4: '#ff5252' };
+    const color = stageColors[d.stage] || '#e0e0e0';
+    const tvUrl = d.market === 'usa'
+        ? `https://www.tradingview.com/chart/?symbol=NASDAQ:${d.symbol}`
+        : `https://www.tradingview.com/chart/?symbol=NSE:${d.symbol}`;
+
+    result.innerHTML = `
+        <div class="stage-result">
+            <div class="stage-header">
+                <div class="stage-title-area">
+                    <a class="stage-symbol tv-link" href="${tvUrl}" target="_blank">${d.symbol} <i class="fas fa-chart-line tv-icon" style="opacity:1;font-size:11px"></i></a>
+                    <div class="stage-company">${d.name}</div>
+                </div>
+                <div class="stage-badge" style="background:${color}20;border:1px solid ${color};color:${color}">
+                    <span class="stage-number">${d.stageName}</span>
+                    <span class="stage-action">${d.stageAction}</span>
+                </div>
+            </div>
+            <div class="stage-desc">${d.stageDesc}</div>
+            <div class="stage-metrics">
+                <div class="stage-metric"><span class="sm-label">Price</span><span class="sm-val">${currency}${d.ltp?.toLocaleString()}</span></div>
+                <div class="stage-metric"><span class="sm-label">30W MA</span><span class="sm-val">${currency}${d.sma150?.toLocaleString()}</span></div>
+                <div class="stage-metric"><span class="sm-label">10W MA</span><span class="sm-val">${currency}${d.sma50?.toLocaleString()}</span></div>
+                <div class="stage-metric"><span class="sm-label">40W MA</span><span class="sm-val">${currency}${d.sma200?.toLocaleString()}</span></div>
+                <div class="stage-metric"><span class="sm-label">30W Slope</span><span class="sm-val" style="color:${d.slope30W >= 0 ? '#00e676' : '#ff5252'}">${d.slope30W >= 0 ? '+' : ''}${d.slope30W}%</span></div>
+                <div class="stage-metric"><span class="sm-label">From 52W High</span><span class="sm-val" style="color:${d.pctFrom52WH >= -5 ? '#00e676' : '#e0e0e0'}">${d.pctFrom52WH}%</span></div>
+                <div class="stage-metric"><span class="sm-label">Vol Ratio</span><span class="sm-val" style="color:${d.volRatio >= 1.2 ? '#00e676' : '#e0e0e0'}">${d.volRatio}x</span></div>
+            </div>
+        </div>`;
 }
