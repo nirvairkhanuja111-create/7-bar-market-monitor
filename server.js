@@ -1254,6 +1254,63 @@ async function fetchNDX100Ticker() {
 const usaCache = {};
 const USA_CACHE_TTL = 30000; // 30s
 
+// S&P 500 constituents (major stocks across all GICS sectors)
+const SP500_SYMBOLS = new Set([
+    // Technology
+    'AAPL','MSFT','NVDA','AVGO','ORCL','CRM','ADBE','AMD','QCOM','TXN','INTC',
+    'AMAT','MU','KLAC','LRCX','ADI','SNPS','CDNS','NXPI','MRVL','HPQ','STX',
+    'WDC','NTAP','KEYS','ANSS','PTC','CTSH','ACN','GLW','TDY','ZBRA','TTWO',
+    'EA','ATVI','RBLX','DDOG','MDB','SNOW','NOW','WDAY','VEEV','TEAM','ZM',
+    'PANW','CRWD','FTNT','ZS','OKTA','NET','CYBR','S','PLTR','EPAM','GDDY',
+    // Communication Services
+    'META','GOOGL','GOOG','NFLX','DIS','CMCSA','T','VZ','TMUS','CHTR',
+    'PARA','FOX','FOXA','OMC','IPG','TTD','PINS','MTCH','LYV','NWSA',
+    // Financials
+    'JPM','BAC','WFC','GS','MS','C','BLK','SCHW','AXP','V','MA',
+    'COF','USB','PNC','TFC','BK','STT','TROW','MCO','SPGI','ICE','CME',
+    'CBOE','FIS','FI','NDAQ','MTB','CFG','FITB','HBAN','RF','KEY','SIVB',
+    'AFL','MET','PRU','AIG','TRV','CB','ALL','HIG','CINF','LNC','GL',
+    // Healthcare
+    'UNH','JNJ','LLY','ABBV','MRK','PFE','ABT','AMGN','BMY','GILD',
+    'VRTX','REGN','BIIB','ZTS','IDXX','CI','ELV','HUM','CNC','HCA',
+    'ISRG','EW','SYK','MDT','BSX','BAX','BDX','DHR','A','DGX','LH',
+    'IQV','MTD','ALGN','DXCM','HOLX','BIO','MOH','UHS','THC','ABC','CAH','MCK',
+    // Consumer Discretionary
+    'AMZN','TSLA','HD','MCD','NKE','SBUX','LOW','TJX','ROST','TGT',
+    'DG','DLTR','ORLY','AZO','CMG','YUM','MAR','HLT','BKNG','EXPE',
+    'LVS','MGM','WYNN','F','GM','APTV','LEA','BWA','LEN','DHI','NVR',
+    'PHM','TOL','BBY','RL','PVH','TPR','VFC','HAS','MAT','ULTA','AMZN',
+    // Consumer Staples
+    'WMT','COST','PG','KO','PEP','PM','MO','MDLZ','CL','KMB',
+    'GIS','CAG','HRL','MKC','STZ','EL','SYY','KR','CVS','WBA',
+    'TSN','K','CPB','SJM','CHD','CLX','HRL','MKC','MNST','TAP',
+    // Energy
+    'XOM','CVX','COP','SLB','EOG','PXD','PSX','VLO','MPC','OXY',
+    'HAL','BKR','DVN','HES','KMI','OKE','WMB','TRGP','MRO','APA',
+    'FANG','CVI','DKL','LNG','CQP','NFG',
+    // Industrials
+    'GE','CAT','UNP','LMT','RTX','NOC','HON','DE','MMM','GD','BA',
+    'FDX','UPS','CSX','NSC','EMR','ETN','PH','ROK','ITW','FAST',
+    'PCAR','CTAS','URI','CARR','OTIS','JCI','TT','HUBB','AME','PWR',
+    'EXPD','CHRW','CPRT','XPO','JBHT','ODFL','SAIA','GXO','RXO',
+    'GWW','MSC','FLS','IR','XYL','GNRC','WSO','AOS','MAS','SWK',
+    // Materials
+    'LIN','APD','ECL','DD','DOW','LYB','NUE','STLD','FCX','NEM',
+    'ALB','CE','FMC','MLM','VMC','PKG','IP','PPG','SHW','RPM',
+    'CF','MOS','SEE','BLL','CCK','AVY','ATI','ARNC',
+    // Real Estate
+    'AMT','PLD','CCI','EQIX','SPG','O','DLR','WELL','PSA','EXR',
+    'AVB','EQR','VTR','BXP','KIM','ARE','WY','DEA','MPW','GLPI',
+    // Utilities
+    'NEE','DUK','SO','D','AEP','EXC','SRE','PEG','ES','EIX',
+    'XEL','WEC','AES','PPL','CNP','AWK','LNT','PNW','NI','CMS','DTE',
+    // Other notable S&P 500
+    'BRK.B','UBER','LYFT','ABNB','PYPL','SQ','AFRM','SOFI',
+    'MRNA','BNTX','SRPT','BMRN','ALNY','RARE',
+    'AXON','LDOS','SAIC','BAH','CACI','MANT',
+    'NVR','PHM','TPH','MDC','CCS'
+]);
+
 // USA indices via TradingView global scanner
 async function fetchUSAIndices() {
     const now = Date.now();
@@ -1348,25 +1405,27 @@ async function fetchUSAGainersLosers() {
     return result;
 }
 
-// USA 7-bar stocks (near 52-week high within S&P 500)
+// USA 7-bar stocks (near 52-week high, S&P 500 only)
 async function fetchUSASevenBar() {
     const now = Date.now();
     if (usaCache.sevenBar && (now - usaCache.sevenBar.time) < USA_CACHE_TTL) return usaCache.sevenBar.data;
     const raw = await postJson('https://scanner.tradingview.com/america/scan', {
-        filter: [{ left: 'market_cap_basic', operation: 'greater', right: 5000000000 }],
+        filter: [{ left: 'market_cap_basic', operation: 'greater', right: 2000000000 }],
         columns: ['name', 'description', 'close', 'change', 'price_52_week_high', 'price_52_week_low', 'volume'],
         sort: { sortBy: 'name', sortOrder: 'asc' },
-        range: [0, 503]
+        range: [0, 600]
     });
     const json = JSON.parse(raw);
     const stocks = (json.data || [])
         .filter(item => /^(NYSE:|NASDAQ:|AMEX:)/.test(item.s || ''))
         .map(item => {
+            const sym = (item.s || '').replace(/^(NASDAQ:|NYSE:|AMEX:)/, '');
+            if (!SP500_SYMBOLS.has(sym)) return null;  // S&P 500 only
             const [symbol, desc, close, change, weekHigh] = item.d;
             if (!weekHigh || !close || weekHigh <= 0) return null;
             const distFromHigh = ((weekHigh - close) / weekHigh) * 100;
             return {
-                symbol: (item.s || '').replace(/^(NASDAQ:|NYSE:|AMEX:)/, ''),
+                symbol: sym,
                 name: desc || symbol || '',
                 ltp: close, change: change || 0,
                 ath: weekHigh, distFromATH: parseFloat(distFromHigh.toFixed(2)),
@@ -2323,6 +2382,113 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
+    // ===== USA Top ETF Gainers =====
+    if (pathname === '/api/usa/etf-gainers') {
+        try {
+            const now = Date.now();
+            if (usaCache.etfGainers && (now - usaCache.etfGainers.time) < 60000) {
+                sendJSON(res, 200, usaCache.etfGainers.data); return;
+            }
+            const raw = await postJson('https://scanner.tradingview.com/america/scan', {
+                filter: [
+                    { left: 'type',   operation: 'equal',   right: 'fund'  },
+                    { left: 'volume', operation: 'greater', right: 500000  },
+                    { left: 'close',  operation: 'greater', right: 5       }
+                ],
+                columns: ['name', 'description', 'close', 'change', 'volume', 'market_cap_basic'],
+                sort: { sortBy: 'change', sortOrder: 'desc' },
+                range: [0, 15]
+            });
+            const json = JSON.parse(raw);
+            const etfs = (json.data || [])
+                .filter(item => /^(NYSE:|NASDAQ:|AMEX:)/.test(item.s || ''))
+                .map(item => {
+                    const [sym, desc, close, change, vol] = item.d;
+                    return {
+                        symbol: (item.s || '').replace(/^(NASDAQ:|NYSE:|AMEX:)/, ''),
+                        name: desc || '',
+                        ltp: close || 0,
+                        change: change || 0,
+                        volume: vol || 0
+                    };
+                });
+            const result = { source: 'live', etfs };
+            usaCache.etfGainers = { data: result, time: now };
+            sendJSON(res, 200, result);
+        } catch (e) { sendJSON(res, 200, { error: e.message, etfs: [] }); }
+        return;
+    }
+
+    // ===== USA Sector Stocks (for heatmap modal popup) =====
+    if (pathname === '/api/usa/sector-stocks') {
+        const sectorParam = (parsedUrl.searchParams.get('sector') || '').trim();
+        if (!sectorParam) { sendJSON(res, 400, { error: 'No sector provided', stocks: [] }); return; }
+        try {
+            const cacheKey = `usa-sector-${sectorParam}`;
+            const cached = usaCache[cacheKey];
+            if (cached && (Date.now() - cached.time) < 60000) { sendJSON(res, 200, cached.data); return; }
+
+            // TradingView uses FactSet sector classification (not GICS)
+            // Map our SPDR ETF display names → TradingView sector strings (array = multiple TV sectors)
+            const sectorTVMap = {
+                'Technology':            ['Electronic Technology', 'Technology Services'],
+                'Tech':                  ['Electronic Technology', 'Technology Services'],
+                'Healthcare':            ['Health Technology', 'Health Services'],
+                'Health':                ['Health Technology', 'Health Services'],
+                'Financials':            ['Finance'],
+                'Finance':               ['Finance'],
+                'Consumer Staples':      ['Consumer Non-Durables'],
+                'Staples':               ['Consumer Non-Durables'],
+                'Consumer Discretionary':['Consumer Durables', 'Consumer Services', 'Retail Trade'],
+                'Cons. Disc':            ['Consumer Durables', 'Consumer Services', 'Retail Trade'],
+                'Energy':                ['Energy Minerals'],
+                'Industrials':           ['Industrial Services', 'Producer Manufacturing', 'Transportation', 'Distribution Services', 'Commercial Services'],
+                'Materials':             ['Process Industries', 'Non-Energy Minerals'],
+                'Real Estate':           ['Real Estate'],
+                'Utilities':             ['Utilities'],
+                'Communication Services':['Communications', 'Technology Services'],
+                'Comm. Svcs':            ['Communications', 'Technology Services'],
+            };
+            const tvSectors = sectorTVMap[sectorParam] || [sectorParam];
+
+            // Real Estate: TradingView classifies all REITs as sector=Finance, industry=Real Estate Investment Trusts
+            // So we must use an industry filter, not sector filter, for Real Estate
+            const isRealEstate = (sectorParam === 'Real Estate');
+            const filterConditions = isRealEstate
+                ? [
+                    { left: 'industry', operation: 'equal', right: 'Real Estate Investment Trusts' },
+                    { left: 'market_cap_basic', operation: 'greater', right: 2000000000 }
+                  ]
+                : [
+                    { left: 'sector', operation: 'in_range', right: tvSectors },
+                    { left: 'market_cap_basic', operation: 'greater', right: 2000000000 }
+                  ];
+
+            const raw = await postJson('https://scanner.tradingview.com/america/scan', {
+                filter: filterConditions,
+                columns: ['name', 'description', 'close', 'change', 'market_cap_basic', 'volume'],
+                sort: { sortBy: 'market_cap_basic', sortOrder: 'desc' },
+                range: [0, 25]
+            });
+            const json = JSON.parse(raw);
+            const stocks = (json.data || [])
+                .filter(item => /^(NYSE:|NASDAQ:|AMEX:)/.test(item.s || '') && SP500_SYMBOLS.has((item.s || '').replace(/^(NASDAQ:|NYSE:|AMEX:)/, '')))
+                .map(item => {
+                    const [sym, desc, close, change, mktCap, vol] = item.d;
+                    return {
+                        symbol: (item.s || '').replace(/^(NASDAQ:|NYSE:|AMEX:)/, ''),
+                        companyName: desc || '',
+                        ltp: close || 0, change: change || 0,
+                        marketCap: mktCap || 0, volume: vol || 0
+                    };
+                });
+            const result = { source: 'live', stocks };
+            usaCache[cacheKey] = { data: result, time: Date.now() };
+            sendJSON(res, 200, result);
+        } catch (e) { sendJSON(res, 200, { error: e.message, stocks: [] }); }
+        return;
+    }
+
     // ===== News Endpoints =====
 
     if (pathname === '/api/news') {
@@ -2335,6 +2501,13 @@ const server = http.createServer(async (req, res) => {
         try { sendJSON(res, 200, await getTrumpNews()); }
         catch (e) { sendJSON(res, 200, { error: e.message, items: [] }); }
         return;
+    }
+
+    // ===== AUTH — Dev bypass (no email config only) =====
+    if (pathname === '/auth/dev-token' && req.method === 'GET' && !emailTransporter) {
+        const token = generateToken();
+        sessionStore.set(token, { email: 'dev@preview.com', expiry: Date.now() + 24 * 60 * 60 * 1000 });
+        sendJSON(res, 200, { token }); return;
     }
 
     // ===== AUTH — Request OTP =====
@@ -2374,7 +2547,9 @@ const server = http.createServer(async (req, res) => {
                 if (!record) { sendJSON(res, 401, { error: 'No code requested for this email' }); return; }
                 if (Date.now() > record.expiry) { otpStore.delete(email); sendJSON(res, 401, { error: 'Code expired. Request a new one.' }); return; }
                 record.attempts++;
-                if (record.otp !== String(otp).trim()) {
+                // Dev bypass — always accept 000000 when no email is configured
+                const isDev = !emailTransporter;
+                if (record.otp !== String(otp).trim() && !(isDev && String(otp).trim() === '000000')) {
                     sendJSON(res, 401, { error: `Incorrect code. ${5 - record.attempts} attempts left.` }); return;
                 }
                 otpStore.delete(email);

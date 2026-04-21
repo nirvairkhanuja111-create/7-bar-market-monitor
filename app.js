@@ -143,6 +143,29 @@ function shimmerRows(count = 5) {
     `).join('');
 }
 
+// ===== THEME (DARK / LIGHT) =====
+function initTheme() {
+    const saved = localStorage.getItem('mm_theme') || 'dark';
+    applyTheme(saved, false);
+}
+
+function applyTheme(theme, animate = true) {
+    if (!animate) document.documentElement.style.setProperty('transition', 'none');
+    document.documentElement.setAttribute('data-theme', theme);
+    const icon = document.getElementById('themeIcon');
+    if (icon) icon.className = theme === 'light' ? 'fas fa-moon' : 'fas fa-sun';
+    localStorage.setItem('mm_theme', theme);
+    if (!animate) requestAnimationFrame(() => document.documentElement.style.removeProperty('transition'));
+}
+
+function toggleTheme() {
+    const current = document.documentElement.getAttribute('data-theme') || 'dark';
+    applyTheme(current === 'dark' ? 'light' : 'dark');
+}
+
+// Apply theme immediately (before DOM ready) to avoid flash
+initTheme();
+
 // ===== AUTH =====
 const EMAIL_REGEX = /^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$/;
 
@@ -641,14 +664,35 @@ function initMarketStatus() { updateMarketStatus(); setInterval(updateMarketStat
 
 function updateMarketStatus() {
     const now = new Date();
-    const ist = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
-    const hour = ist.getHours(), min = ist.getMinutes(), day = ist.getDay();
-    const timeNum = hour * 100 + min;
-    const isOpen = day >= 1 && day <= 5 && timeNum >= 915 && timeNum <= 1530;
     const statusEl = document.getElementById("marketStatus");
+    if (!statusEl) return;
     const textEl = statusEl.querySelector(".status-text");
-    if (isOpen) { statusEl.classList.add("open"); textEl.textContent = "MARKET OPEN"; }
-    else { statusEl.classList.remove("open"); textEl.textContent = day >= 1 && day <= 5 && timeNum >= 900 && timeNum < 915 ? "PRE-MARKET" : "MARKET CLOSED"; }
+
+    if (currentMarket === 'usa') {
+        // NYSE / NASDAQ: 9:30 AM – 4:00 PM ET (America/New_York handles DST automatically)
+        const et = new Date(now.toLocaleString("en-US", { timeZone: "America/New_York" }));
+        const hour = et.getHours(), min = et.getMinutes(), day = et.getDay();
+        const t = hour * 100 + min;
+        const isWeekday = day >= 1 && day <= 5;
+        const isOpen    = isWeekday && t >= 930 && t < 1600;
+        const isPre     = isWeekday && t >= 400 && t < 930;
+        const isAfter   = isWeekday && t >= 1600 && t < 2000;
+        if (isOpen)       { statusEl.classList.add("open");    textEl.textContent = "NYSE OPEN"; }
+        else if (isPre)   { statusEl.classList.remove("open"); textEl.textContent = "PRE-MARKET"; }
+        else if (isAfter) { statusEl.classList.remove("open"); textEl.textContent = "AFTER HOURS"; }
+        else              { statusEl.classList.remove("open"); textEl.textContent = "NYSE CLOSED"; }
+    } else {
+        // NSE: 9:15 AM – 3:30 PM IST
+        const ist = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
+        const hour = ist.getHours(), min = ist.getMinutes(), day = ist.getDay();
+        const t = hour * 100 + min;
+        const isWeekday = day >= 1 && day <= 5;
+        const isOpen  = isWeekday && t >= 915 && t <= 1530;
+        const isPre   = isWeekday && t >= 900 && t < 915;
+        if (isOpen)     { statusEl.classList.add("open");    textEl.textContent = "MARKET OPEN"; }
+        else if (isPre) { statusEl.classList.remove("open"); textEl.textContent = "PRE-MARKET"; }
+        else            { statusEl.classList.remove("open"); textEl.textContent = "MARKET CLOSED"; }
+    }
 }
 
 // ===== CNBC-STYLE MARQUEE TICKER (ALL Nifty 500) =====
@@ -838,11 +882,26 @@ function openSectorModal(sector) {
     document.getElementById('modal-stocks').innerHTML = '<div class="modal-loading">Loading stocks...</div>';
     modal.style.display = 'flex';
 
-    // Fetch stocks for this sector from NSE
-    fetchSectorStocks(sector.fullName);
+    // Fetch stocks for this sector — USA or India depending on active tab
+    fetchSectorStocks(sector.fullName, currentMarket === 'usa');
 }
 
-async function fetchSectorStocks(sectorName) {
+async function fetchSectorStocks(sectorName, isUSA = false) {
+    if (isUSA) {
+        // USA: call dedicated USA sector-stocks endpoint
+        try {
+            const response = await fetch(`/api/usa/sector-stocks?sector=${encodeURIComponent(sectorName)}`);
+            if (!response.ok) throw new Error('Failed to fetch');
+            const data = await response.json();
+            renderSectorStocks(data.stocks || [], true);
+        } catch (e) {
+            console.warn('USA sector stocks fetch error:', e.message);
+            document.getElementById('modal-stocks').innerHTML = '<div class="modal-error">Failed to load stocks</div>';
+        }
+        return;
+    }
+
+    // India: use NSE sector index
     const sectorMap = {
         'Nifty IT': 'NIFTY IT',
         'Nifty Bank': 'NIFTY BANK',
@@ -860,39 +919,43 @@ async function fetchSectorStocks(sectorName) {
         'Nifty Consumer Durables': 'NIFTY CONSUMER DURABLES',
         'Nifty Oil & Gas': 'NIFTY OIL & GAS',
     };
-
     const nseSector = sectorMap[sectorName] || sectorName;
-
     try {
         const response = await fetch(`/api/sector-stocks?sector=${encodeURIComponent(nseSector)}`);
         if (!response.ok) throw new Error('Failed to fetch');
         const data = await response.json();
-        renderSectorStocks(data.stocks || []);
+        renderSectorStocks(data.stocks || [], false);
     } catch (e) {
         console.warn('Sector stocks fetch error:', e.message);
         document.getElementById('modal-stocks').innerHTML = '<div class="modal-error">Failed to load stocks</div>';
     }
 }
 
-function renderSectorStocks(stocks) {
+function renderSectorStocks(stocks, isUSA = false) {
     const container = document.getElementById('modal-stocks');
     if (!stocks.length) {
-        container.innerHTML = '<div class="modal-empty">No stocks found</div>';
+        container.innerHTML = '<div class="modal-empty">No stocks found for this sector</div>';
         return;
     }
-
+    const currency = isUSA ? '$' : '₹';
+    const locale = isUSA ? 'en-US' : 'en-IN';
     container.innerHTML = stocks.map((s, i) => {
         const change = parseFloat(s.change || s.pChange || 0);
         const changeClass = change >= 0 ? 'positive' : 'negative';
+        const sym = s.symbol || s.SYMBOL || '';
+        const tvExchange = isUSA ? 'NASDAQ' : 'NSE';
+        const tvUrl = `https://www.tradingview.com/chart/?symbol=${tvExchange}:${sym}`;
         return `
             <div class="modal-stock-item">
                 <span class="modal-rank">${i + 1}</span>
                 <div class="modal-stock-info">
-                    <div class="modal-stock-name">${s.symbol || s.SYMBOL || ''}</div>
+                    <div class="modal-stock-name">
+                        <a href="${tvUrl}" target="_blank" class="tv-link">${sym} <i class="fas fa-chart-line tv-icon" style="opacity:1;font-size:9px"></i></a>
+                    </div>
                     <div class="modal-stock-company">${s.companyName || ''}</div>
                 </div>
                 <div class="modal-stock-price">
-                    <div class="modal-ltp">\u20B9${parseFloat(s.ltp || s.lastPrice || 0).toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2})}</div>
+                    <div class="modal-ltp">${currency}${parseFloat(s.ltp || s.lastPrice || 0).toLocaleString(locale, {minimumFractionDigits:2, maximumFractionDigits:2})}</div>
                     <div class="modal-change ${changeClass}">${change >= 0 ? '+' : ''}${change.toFixed(2)}%</div>
                 </div>
             </div>
@@ -1111,7 +1174,11 @@ function renderMBITable(rows) {
         </tr>`;
     }
 
-    html += '</tbody></table></div>';
+    html += `</tbody></table></div>
+    <div class="mbi-legend">
+        <span class="mbi-legend-item"><span class="mbi-legend-dot mbi-legend-dot-green"></span><span class="mbi-legend-text-green">Green row</span> — Market breadth is good, breakouts are likely to work</span>
+        <span class="mbi-legend-item"><span class="mbi-legend-dot mbi-legend-dot-red"></span><span class="mbi-legend-text-red">Red row</span> — Market breadth is poor, breakouts are unlikely to work</span>
+    </div>`;
     wrapper.innerHTML = html;
 }
 
@@ -1188,6 +1255,11 @@ function switchMarket(market) {
         fetchIndiaEarnings();
         // Restore India market news
         fetchLiveNews();
+        updateMarketStatus();
+        // Hide ETF card, restore 3-col grid
+        const etfCard = document.getElementById('etfCard');
+        if (etfCard) etfCard.style.display = 'none';
+        document.querySelector('.three-col-section')?.classList.remove('four-cols');
     } else {
         // Set USA labels
         setLabel('kpi-nifty', 'S&P 500');
@@ -1207,6 +1279,11 @@ function switchMarket(market) {
         loadUSAData();
         // Load USA news
         fetchUSANews();
+        updateMarketStatus();
+        // Show ETF card, expand to 4-col grid
+        const etfCard = document.getElementById('etfCard');
+        if (etfCard) etfCard.style.display = 'flex';
+        document.querySelector('.three-col-section')?.classList.add('four-cols');
     }
 }
 
@@ -1323,6 +1400,8 @@ async function loadUSAData() {
         });
         // Load earnings calendar
         fetch('/api/usa/earnings').then(r => r.json()).then(renderUSAEarnings).catch(() => {});
+        // Load top ETF gainers
+        fetchUSAETFGainers();
     } catch (e) {
         console.error('USA data load error:', e);
     }
@@ -1331,6 +1410,7 @@ async function loadUSAData() {
 function renderRawIndexCard(cardId, price, change, prefix, decimals) {
     prefix = prefix || '';
     decimals = decimals != null ? decimals : 2;
+    const card  = document.getElementById(cardId);
     const valEl = document.getElementById(cardId + '-val');
     const chgEl = document.getElementById(cardId + '-chg');
     if (!valEl || !chgEl) return;
@@ -1338,6 +1418,8 @@ function renderRawIndexCard(cardId, price, change, prefix, decimals) {
     valEl.textContent = prefix + price.toLocaleString('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
     chgEl.textContent = `${change >= 0 ? '+' : ''}${change.toFixed(2)}%`;
     chgEl.className = 'kpi-index-change ' + (change >= 0 ? 'positive' : 'negative');
+    // Fix card background to match direction
+    if (card) card.className = 'kpi-index-card ' + (change >= 0 ? 'up' : 'down');
 }
 
 function updateBreakoutSignal(status, price, ema21, ema50, indexName) {
@@ -1388,6 +1470,44 @@ function renderUSAStockList(containerId, stocks, type) {
                 </div>
             </div>
         `;
+    }).join('');
+}
+
+// ===== USA ETF GAINERS =====
+async function fetchUSAETFGainers() {
+    try {
+        const res = await fetch('/api/usa/etf-gainers');
+        const d = await res.json();
+        renderUSAETFList(d.etfs || []);
+        updateSourceBadge('etfSource', d.source || 'live');
+    } catch (e) {
+        const el = document.getElementById('etfList');
+        if (el) el.innerHTML = '<div class="no-data">Failed to load ETF data</div>';
+    }
+}
+
+function renderUSAETFList(etfs) {
+    const container = document.getElementById('etfList');
+    if (!container) return;
+    if (!etfs.length) { container.innerHTML = '<div class="no-data">No ETF data available</div>'; return; }
+    container.innerHTML = etfs.map((s, i) => {
+        const change = parseFloat(s.change) || 0;
+        const changeClass = change >= 0 ? 'positive' : 'negative';
+        const tvUrl = `https://www.tradingview.com/chart/?symbol=NASDAQ:${s.symbol}`;
+        return `
+            <div class="stock-item">
+                <span class="stock-rank">${i + 1}</span>
+                <div class="stock-info">
+                    <a class="stock-name tv-link" href="${tvUrl}" target="_blank" title="View on TradingView">
+                        ${s.symbol} <i class="fas fa-chart-line tv-icon"></i>
+                    </a>
+                    <div class="stock-company">${s.name.length > 28 ? s.name.slice(0, 28) + '…' : s.name}</div>
+                </div>
+                <div class="stock-price">
+                    <div class="stock-ltp">$${(s.ltp || 0).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2})}</div>
+                    <div class="stock-pct ${changeClass}">${change >= 0 ? '+' : ''}${change.toFixed(2)}%</div>
+                </div>
+            </div>`;
     }).join('');
 }
 

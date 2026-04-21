@@ -67,7 +67,7 @@
 }
 .auth-back-btn:hover { color: #9ca3af; }
 
-/* ===== ROOT VARIABLES ===== */
+/* ===== ROOT VARIABLES (DARK — default) ===== */
 :root {
     --bg-primary: #0a0e17;
     --bg-secondary: #111827;
@@ -101,6 +101,157 @@
     --transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
     --font-main: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
     --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+}
+
+/* ===== LIGHT MODE VARIABLES ===== */
+[data-theme="light"] {
+    --bg-primary: #f0f4f8;
+    --bg-secondary: #ffffff;
+    --bg-card: #ffffff;
+    --bg-card-hover: #f8faff;
+    --bg-accent: #eef2f9;
+    --border: #e2e8f0;
+    --border-light: #cbd5e1;
+    --text-primary: #0f172a;
+    --text-secondary: #475569;
+    --text-muted: #94a3b8;
+    --green: #059669;
+    --green-dim: #047857;
+    --green-bg: rgba(5, 150, 105, 0.1);
+    --green-border: rgba(5, 150, 105, 0.3);
+    --red: #dc2626;
+    --red-dim: #b91c1c;
+    --red-bg: rgba(220, 38, 38, 0.08);
+    --red-border: rgba(220, 38, 38, 0.22);
+    --gold: #b45309;
+    --gold-bg: rgba(180, 83, 9, 0.08);
+    --blue: #2563eb;
+    --blue-bg: rgba(37, 99, 235, 0.08);
+    --purple: #7c3aed;
+    --orange: #ea580c;
+    --cyan: #0891b2;
+    --shadow: 0 2px 12px rgba(0,0,0,0.06);
+    --shadow-lg: 0 8px 32px rgba(0,0,0,0.1);
+}
+
+/* Header overrides for light mode */
+[data-theme="light"] .dashboard-header {
+    background: linear-gradient(180deg, #ffffff 0%, #f8faff 100%);
+    border-bottom-color: #e2e8f0;
+    box-shadow: 0 1px 16px rgba(0,0,0,0.06);
+}
+[data-theme="light"] .logo-subtitle { color: #94a3b8; }
+[data-theme="light"] .header-time { color: #0f172a; }
+[data-theme="light"] .market-tabs {
+    background: rgba(0,0,0,0.05);
+    border-color: rgba(0,0,0,0.1);
+}
+[data-theme="light"] .market-tab { color: rgba(0,0,0,0.35); }
+[data-theme="light"] .market-tab:hover {
+    color: rgba(0,0,0,0.65);
+    background: rgba(0,0,0,0.07);
+}
+[data-theme="light"] .market-tab.active { background: #00c060; color: #fff; }
+[data-theme="light"] .market-tab[data-market="usa"].active { background: #2563eb; color: #fff; }
+[data-theme="light"] .ticker-tape-wrapper { background: #fff; border-bottom-color: #e2e8f0; }
+[data-theme="light"] .kite-ticker-container {
+    background: #ffffff;
+    border-bottom: 2px solid #e2e8f0;
+    box-shadow: 0 1px 8px rgba(0,0,0,0.05);
+}
+[data-theme="light"] .kite-ticker-item { border-right-color: #f0f4f8; }
+[data-theme="light"] .kite-ticker-item:hover { background: rgba(37,99,235,0.05); }
+[data-theme="light"] .ticker-symbol { color: #0f172a; }
+[data-theme="light"] .ticker-price { color: #475569; }
+[data-theme="light"] .quote-box { background: #f1f5f9; border-color: #e2e8f0; }
+[data-theme="light"] .quote-box:hover { border-color: var(--gold); background: var(--gold-bg); }
+[data-theme="light"] .live-badge { background: rgba(5,150,105,0.12); color: #059669; border-color: rgba(5,150,105,0.25); }
+[data-theme="light"] .source-badge { background: rgba(37,99,235,0.08); color: #2563eb; border-color: rgba(37,99,235,0.2); }
+[data-theme="light"] .card-header { border-bottom-color: #e2e8f0; }
+[data-theme="light"] .card-header h3 { color: #0f172a; }
+[data-theme="light"] .col-header { border-bottom-color: #e2e8f0; }
+[data-theme="light"] .col-title { color: #0f172a; }
+[data-theme="light"] .stock-item { border-bottom-color: #f1f5f9; }
+[data-theme="light"] .stock-item:hover { background: #f8faff; }
+[data-theme="light"] .stock-company { color: #64748b; }
+[data-theme="light"] .news-item { border-bottom-color: #f1f5f9; }
+[data-theme="light"] .news-item:hover { background: #f8faff; }
+[data-theme="light"] .news-source { color: #94a3b8; }
+[data-theme="light"] .news-time { color: #94a3b8; }
+[data-theme="light"] .analyser-placeholder { color: #94a3b8; }
+[data-theme="light"] .analyser-placeholder p { color: #64748b; }
+[data-theme="light"] .method-item { background: #f1f5f9; border-color: #e2e8f0; color: #475569; }
+[data-theme="light"] .spinner { border-top-color: #2563eb; border-color: rgba(37,99,235,0.15); border-top-color: #2563eb; }
+[data-theme="light"] .dashboard-footer { background: #ffffff; border-top-color: #e2e8f0; color: #94a3b8; }
+[data-theme="light"] .kpi-index-card { background: #fff; border-color: #e2e8f0; }
+[data-theme="light"] .kpi-index-card:hover { border-color: #cbd5e1; background: #f8faff; }
+[data-theme="light"] .kpi-index-name { color: #64748b; }
+[data-theme="light"] .mbi-table-wrapper table thead th { background: #f1f5f9; color: #475569; border-color: #e2e8f0; }
+[data-theme="light"] .mbi-table-wrapper table tbody td { border-color: #f1f5f9; }
+[data-theme="light"] .mbi-table-wrapper table tbody tr:hover { background: #f8faff; }
+[data-theme="light"] .earnings-table-wrapper table thead th { background: #f1f5f9; color: #475569; border-color: #e2e8f0; }
+[data-theme="light"] .earnings-table-wrapper table tbody td { border-color: #f1f5f9; color: #0f172a; }
+[data-theme="light"] .earnings-table-wrapper table tbody tr:hover { background: #f8faff; }
+[data-theme="light"] .adv-dec-ratio { color: #64748b; }
+[data-theme="light"] .sentiment-detail { color: #64748b; }
+[data-theme="light"] .analyser-input { background: #f8faff; border-color: #e2e8f0; color: #0f172a; }
+[data-theme="light"] .analyser-input:focus { border-color: #2563eb; }
+[data-theme="light"] .analyser-btn { background: #2563eb; }
+[data-theme="light"] .quick-pick { background: #f1f5f9; border-color: #e2e8f0; color: #475569; }
+[data-theme="light"] .quick-pick:hover { background: #e8f0fe; border-color: #2563eb; color: #2563eb; }
+[data-theme="light"] .sm-label { color: #94a3b8; }
+[data-theme="light"] .sm-val { color: #0f172a; }
+[data-theme="light"] .stage-result { background: #f8faff; border-color: #e2e8f0; }
+[data-theme="light"] .stage-desc { color: #475569; background: #f1f5f9; border-color: #e2e8f0; }
+[data-theme="light"] .stage-metric { background: #f1f5f9; border-color: #e2e8f0; }
+[data-theme="light"] ::-webkit-scrollbar-track { background: #f0f4f8; }
+[data-theme="light"] ::-webkit-scrollbar-thumb { background: #cbd5e1; }
+
+/* ===== THEME TOGGLE BUTTON ===== */
+.header-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-left: 16px;
+}
+.header-controls .market-tabs { margin-left: 0; }
+
+.theme-toggle {
+    width: 34px;
+    height: 34px;
+    border-radius: 8px;
+    border: 1px solid rgba(255,255,255,0.1);
+    background: rgba(255,255,255,0.04);
+    color: rgba(255,255,255,0.45);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+    transition: all 0.2s;
+    flex-shrink: 0;
+}
+.theme-toggle:hover {
+    color: var(--gold);
+    border-color: var(--gold);
+    background: var(--gold-bg);
+}
+[data-theme="light"] .theme-toggle {
+    background: rgba(0,0,0,0.04);
+    border-color: rgba(0,0,0,0.12);
+    color: rgba(0,0,0,0.4);
+}
+[data-theme="light"] .theme-toggle:hover {
+    color: var(--gold);
+    border-color: var(--gold);
+    background: var(--gold-bg);
+}
+
+/* Smooth theme transition */
+body, .dashboard-header, .col-card, .bottom-card, .mbi-card,
+.kpi-index-card, .kpi-card, .analyser-card, .stock-item,
+.news-item, .ticker-tape-wrapper, .dashboard-footer {
+    transition: background 0.25s ease, border-color 0.25s ease, color 0.2s ease;
 }
 
 /* ===== RESET & BASE ===== */
@@ -662,6 +813,18 @@ body {
 .mbi-green-swatch { background: var(--green); opacity: 0.7; }
 .mbi-cyan-swatch { background: var(--cyan); opacity: 0.7; }
 
+/* MBI breadth legend (row-color guide) */
+.mbi-legend { display: flex; flex-direction: column; gap: 5px; }
+.mbi-legend-dot {
+    width: 9px; height: 9px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+.mbi-legend-dot-green { background: var(--green); }
+.mbi-legend-dot-red   { background: var(--red); }
+.mbi-legend-text-green { color: var(--green); font-weight: 600; }
+.mbi-legend-text-red   { color: var(--red);   font-weight: 600; }
+
 /* ===== STOCK ANALYSER ===== */
 .analyser-section {
     padding: 0 24px 16px;
@@ -1188,6 +1351,12 @@ body {
     grid-template-columns: repeat(3, 1fr);
     gap: 16px;
     padding: 0 24px 16px;
+}
+.three-col-section.four-cols {
+    grid-template-columns: repeat(4, 1fr);
+}
+@media (max-width: 1400px) {
+    .three-col-section.four-cols { grid-template-columns: repeat(2, 1fr); }
 }
 
 .col-card {
