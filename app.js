@@ -1175,9 +1175,10 @@ function renderMBITable(rows) {
     }
 
     html += `</tbody></table></div>
-    <div class="mbi-legend">
-        <span class="mbi-legend-item"><span class="mbi-legend-dot mbi-legend-dot-green"></span><span class="mbi-legend-text-green">Green row</span> — Market breadth is good, breakouts are likely to work</span>
-        <span class="mbi-legend-item"><span class="mbi-legend-dot mbi-legend-dot-red"></span><span class="mbi-legend-text-red">Red row</span> — Market breadth is poor, breakouts are unlikely to work</span>
+    <div class="mbi-breadth-note">
+        <span class="mbi-note-green">＋ Green row = good breadth</span>
+        <span class="mbi-note-sep">·</span>
+        <span class="mbi-note-red">－ Red row = poor breadth</span>
     </div>`;
     wrapper.innerHTML = html;
 }
