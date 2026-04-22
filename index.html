@@ -28,9 +28,14 @@
                     <p class="logo-subtitle">Market Intelligence Dashboard</p>
                 </div>
             </div>
-            <div class="market-tabs">
-                <button class="market-tab active" data-market="india" onclick="switchMarket('india')">INDIA</button>
-                <button class="market-tab" data-market="usa" onclick="switchMarket('usa')">USA</button>
+            <div class="header-controls">
+                <div class="market-tabs">
+                    <button class="market-tab active" data-market="india" onclick="switchMarket('india')">INDIA</button>
+                    <button class="market-tab" data-market="usa" onclick="switchMarket('usa')">USA</button>
+                </div>
+                <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" title="Toggle light / dark mode">
+                    <i class="fas fa-sun" id="themeIcon"></i>
+                </button>
             </div>
         </div>
         <div class="header-center">
@@ -134,6 +139,16 @@
                 <span class="col-badge badge-red" id="losersMarketBadge">NIFTY 500</span>
             </div>
             <div class="stock-list" id="losersList">
+                <div class="loading-placeholder"><div class="spinner"></div><span>Loading...</span></div>
+            </div>
+        </div>
+        <!-- ETF card — USA only -->
+        <div class="col-card" id="etfCard" style="display:none">
+            <div class="col-header">
+                <div class="col-title"><i class="fas fa-chart-pie"></i> TOP ETF GAINERS <span class="source-badge" id="etfSource"></span></div>
+                <span class="col-badge badge-blue">US ETFs</span>
+            </div>
+            <div class="stock-list" id="etfList">
                 <div class="loading-placeholder"><div class="spinner"></div><span>Loading...</span></div>
             </div>
         </div>
