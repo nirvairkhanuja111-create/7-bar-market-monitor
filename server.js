@@ -2451,13 +2451,19 @@ const server = http.createServer(async (req, res) => {
             };
             const tvSectors = sectorTVMap[sectorParam] || [sectorParam];
 
-            // Real Estate: TradingView classifies all REITs as sector=Finance, industry=Real Estate Investment Trusts
-            // So we must use an industry filter, not sector filter, for Real Estate
+            // Real Estate: TradingView classifies all REITs under sector=Finance.
+            // The industry filter isn't reliably supported by the scanner API.
+            // Instead: query Finance sector broadly, then filter server-side to known S&P 500 REITs.
             const isRealEstate = (sectorParam === 'Real Estate');
+            const SP500_REITS = new Set([
+                'AMT','PLD','CCI','EQIX','SPG','O','DLR','WELL','PSA','EXR',
+                'AVB','EQR','VTR','BXP','KIM','ARE','WY','IRM','ESS','VICI',
+                'GLPI','UDR','CPT','NNN','FR','ELS','SUI','CUBE','REXR','HST'
+            ]);
             const filterConditions = isRealEstate
                 ? [
-                    { left: 'industry', operation: 'equal', right: 'Real Estate Investment Trusts' },
-                    { left: 'market_cap_basic', operation: 'greater', right: 2000000000 }
+                    { left: 'sector', operation: 'in_range', right: ['Finance'] },
+                    { left: 'market_cap_basic', operation: 'greater', right: 1000000000 }
                   ]
                 : [
                     { left: 'sector', operation: 'in_range', right: tvSectors },
@@ -2468,11 +2474,15 @@ const server = http.createServer(async (req, res) => {
                 filter: filterConditions,
                 columns: ['name', 'description', 'close', 'change', 'market_cap_basic', 'volume'],
                 sort: { sortBy: 'market_cap_basic', sortOrder: 'desc' },
-                range: [0, 25]
+                range: [0, 100]  // wider range so we catch all REITs within Finance results
             });
             const json = JSON.parse(raw);
             const stocks = (json.data || [])
-                .filter(item => /^(NYSE:|NASDAQ:|AMEX:)/.test(item.s || '') && SP500_SYMBOLS.has((item.s || '').replace(/^(NASDAQ:|NYSE:|AMEX:)/, '')))
+                .filter(item => {
+                    const sym = (item.s || '').replace(/^(NASDAQ:|NYSE:|AMEX:)/, '');
+                    if (isRealEstate) return SP500_REITS.has(sym);
+                    return /^(NYSE:|NASDAQ:|AMEX:)/.test(item.s || '') && SP500_SYMBOLS.has(sym);
+                })
                 .map(item => {
                     const [sym, desc, close, change, mktCap, vol] = item.d;
                     return {

@@ -1107,6 +1107,11 @@ function renderMBITable(rows) {
     const niftyClass = latest.niftyChg >= 0 ? 'mbi-em-green' : 'mbi-em-red';
 
     let html = `
+        <div class="mbi-breadth-note">
+            <span class="mbi-note-green">＋ Green row = good breadth</span>
+            <span class="mbi-note-sep">·</span>
+            <span class="mbi-note-red">－ Red row = poor breadth</span>
+        </div>
         <div class="mbi-current" style="display:flex;gap:20px;flex-wrap:wrap;justify-content:center;margin-bottom:12px">
             <div style="text-align:center">
                 <div class="mbi-em-label">NIFTY</div>
@@ -1174,12 +1179,7 @@ function renderMBITable(rows) {
         </tr>`;
     }
 
-    html += `</tbody></table></div>
-    <div class="mbi-breadth-note">
-        <span class="mbi-note-green">＋ Green row = good breadth</span>
-        <span class="mbi-note-sep">·</span>
-        <span class="mbi-note-red">－ Red row = poor breadth</span>
-    </div>`;
+    html += `</tbody></table></div>`;
     wrapper.innerHTML = html;
 }
 

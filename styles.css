@@ -817,12 +817,10 @@ body {
 .mbi-breadth-note {
     display: flex;
     align-items: center;
-    gap: 8px;
-    margin-top: 8px;
-    padding-top: 8px;
-    border-top: 1px solid var(--border);
-    font-size: 10px;
-    font-weight: 600;
+    gap: 10px;
+    margin-bottom: 14px;
+    font-size: 12px;
+    font-weight: 700;
     letter-spacing: 0.3px;
 }
 .mbi-note-green { color: var(--green); }
