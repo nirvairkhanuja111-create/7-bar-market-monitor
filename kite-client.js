@@ -56,7 +56,36 @@ class KiteClient {
         this.accessToken = accessToken;
         const data = { accessToken, timestamp: new Date().toISOString() };
         fs.writeFileSync(this.tokenFile, JSON.stringify(data, null, 2));
+        // Mirror to durable storage (GCS) if configured. Survives Cloud Run
+        // container restarts so deploys don't force re-auth.
+        if (typeof this.remoteSave === 'function') {
+            Promise.resolve(this.remoteSave(JSON.stringify(data, null, 2)))
+                .catch(e => console.error('  ❌ Kite token remote save failed:', e.message));
+        }
         console.log('  ✅ Kite token saved');
+    }
+
+    // Hydrate from a remote store (GCS). Called by server.js at startup before
+    // the local .kite-token.json read fallback. If remote token is today's,
+    // also mirror to local disk so subsequent restarts in same container are fast.
+    async loadTokenRemote(remoteLoadFn) {
+        if (typeof remoteLoadFn !== 'function') return false;
+        try {
+            const json = await remoteLoadFn();
+            if (!json) return false;
+            const data = JSON.parse(json);
+            const tokenDate = new Date(data.timestamp).toDateString();
+            const today = new Date().toDateString();
+            if (tokenDate === today && data.accessToken) {
+                this.accessToken = data.accessToken;
+                try { fs.writeFileSync(this.tokenFile, JSON.stringify(data, null, 2)); } catch (e) {}
+                console.log('  🔑 Kite token loaded from remote store (valid for today)');
+                return true;
+            }
+        } catch (e) {
+            console.log('  ℹ️  No remote Kite token (or stale)');
+        }
+        return false;
     }
 
     isAuthenticated() {

@@ -148,14 +148,33 @@ let whitelistReady = loadWhitelist().then(() => {
 // and refresh in background once per day (IST). During refresh, requests are
 // served from the previous day's cache so users never see empty data.
 const GCS_52W_KEY = '52w-cache.json';
+const GCS_KITE_TOKEN_KEY = 'kite-token.json';
 const INSTRUMENTS_FILE = path.join(__dirname, '.kite-instruments.json');
 let gcs52WFile = null;
+let gcsKiteTokenFile = null;
 if (GCS_BUCKET) {
     try {
         const _storage = new Storage();
         gcs52WFile = _storage.bucket(GCS_BUCKET).file(GCS_52W_KEY);
+        gcsKiteTokenFile = _storage.bucket(GCS_BUCKET).file(GCS_KITE_TOKEN_KEY);
         console.log(`  ☁️  GCS 52W cache: gs://${GCS_BUCKET}/${GCS_52W_KEY}`);
+        console.log(`  ☁️  GCS Kite token: gs://${GCS_BUCKET}/${GCS_KITE_TOKEN_KEY}`);
     } catch (e) { /* GCS already failed once for whitelist — silent here */ }
+}
+
+// Wire Kite token persistence to GCS so deploys (= new containers) don't kill
+// the access token. saveToken auto-mirrors; loadTokenRemote hydrates at startup.
+if (kiteClient && gcsKiteTokenFile) {
+    kiteClient.remoteSave = async (json) => {
+        await gcsKiteTokenFile.save(json, { contentType: 'application/json', resumable: false });
+    };
+    // Hydrate at startup — fire-and-forget, no await (server can start without it)
+    kiteClient.loadTokenRemote(async () => {
+        try {
+            const [contents] = await gcsKiteTokenFile.download();
+            return contents.toString();
+        } catch (e) { return null; }
+    }).catch(() => {});
 }
 
 let weekHighLow = {};           // { SYMBOL: { high, low } }
@@ -215,10 +234,12 @@ async function fetchInstrumentTokens() {
     }
 }
 
+// Returns { success, missing, skipped: 'reason' } so cron caller can decide
+// whether to alert/retry. success=0 with no error string still counts as failure.
 async function refresh52WCache() {
-    if (weekHighLowRefreshing) return;
-    if (!kiteClient?.isAuthenticated()) return;
-    if (nifty500SymbolList.length === 0) return;
+    if (weekHighLowRefreshing) return { success: 0, missing: 0, skipped: 'already_refreshing' };
+    if (!kiteClient?.isAuthenticated()) return { success: 0, missing: 0, skipped: 'kite_unauthed' };
+    if (nifty500SymbolList.length === 0) return { success: 0, missing: 0, skipped: 'no_symbol_list' };
 
     weekHighLowRefreshing = true;
     const startTime = Date.now();
@@ -270,6 +291,7 @@ async function refresh52WCache() {
         } else {
             console.error('  ❌ 52W refresh produced no data — keeping previous cache');
         }
+        return { success, missing };
     } finally {
         weekHighLowRefreshing = false;
     }
@@ -410,6 +432,31 @@ async function sendAuthReminder() {
 function cronAuth(req) {
     if (!CRON_SECRET) return false;
     return (req.headers['x-cron-secret'] || '') === CRON_SECRET;
+}
+
+// Email the hardcoded admin recipient when an automated job fails (Gap 1).
+// Always goes to AUTH_REMINDER_RECIPIENT, never anyone else.
+async function sendAdminAlert(subject, body) {
+    if (!emailTransporter) { console.log(`  ⚠️  Alert (no email transport): ${subject}`); return; }
+    const loginUrl = PUBLIC_URL ? `${PUBLIC_URL}/auth/kite` : '/auth/kite';
+    try {
+        await emailTransporter.sendMail({
+            from: emailCfg.from || `"Market Monitor" <${emailCfg.user}>`,
+            to: AUTH_REMINDER_RECIPIENT,
+            subject: `Market Monitor — ${subject}`,
+            html: `
+                <div style="font-family:Inter,sans-serif;background:#0a0e1a;color:#e0e0e0;padding:40px;border-radius:12px;max-width:520px;margin:0 auto">
+                    <h2 style="color:#ff5252;margin:0 0 8px">⚠️ Job alert</h2>
+                    <p style="margin:0 0 16px">${body}</p>
+                    <a href="${loginUrl}" style="display:inline-block;background:#00e676;color:#0a0e1a;padding:14px 28px;border-radius:8px;text-decoration:none;font-weight:700;font-size:15px">Re-auth with Zerodha →</a>
+                    <p style="color:#888;font-size:12px;margin:24px 0 0">${new Date().toISOString()}</p>
+                </div>
+            `
+        });
+        console.log(`  ✉️  Admin alert sent: ${subject}`);
+    } catch (e) {
+        console.error(`  ❌ Admin alert email failed: ${e.message}`);
+    }
 }
 
 // ===== MIME TYPES =====
@@ -2054,16 +2101,34 @@ const server = http.createServer(async (req, res) => {
 
     // ===== CRON — Cloud Scheduler trigger endpoints (X-Cron-Secret header auth) =====
     // Refresh 52W cache. Schedule daily at 18:30 UTC = 00:00 IST.
-    // Returns 202 immediately, refresh runs in background.
+    // Awaits result so Cloud Scheduler sees true success/failure status,
+    // retries on 5xx, and admin gets emailed on failure (Gap 1 + Gap 5).
     if (pathname === '/admin/cron/refresh-52w') {
         if (!cronAuth(req)) { sendJSON(res, 401, { error: 'Unauthorized' }); return; }
-        sendJSON(res, 202, { ok: true, scheduled: true });
-        setImmediate(() => {
-            (async () => {
-                if (Object.keys(instrumentTokens).length === 0) await fetchInstrumentTokens();
-                await refresh52WCache();
-            })().catch(e => console.error('  ❌ Cron refresh failed:', e.message));
-        });
+        try {
+            if (!kiteClient?.isAuthenticated()) {
+                await sendAdminAlert(
+                    'Scheduled 52W refresh skipped — Kite re-auth needed',
+                    'The 00:00 IST refresh job ran but Kite Connect is not authenticated. Cached 52-week data will go stale until you re-auth. Click below to fix:'
+                );
+                sendJSON(res, 500, { error: 'kite_unauthed', alerted: true });
+                return;
+            }
+            if (Object.keys(instrumentTokens).length === 0) await fetchInstrumentTokens();
+            const result = await refresh52WCache();
+            if (!result || result.success === 0) {
+                await sendAdminAlert(
+                    'Scheduled 52W refresh produced no data',
+                    `The refresh job completed but stored 0 symbols. Reason: ${result?.skipped || 'all symbols failed'}. Dashboard is serving previous-day cache. Re-auth Kite if asked:`
+                );
+                sendJSON(res, 500, { error: 'no_data', ...result, alerted: true });
+                return;
+            }
+            sendJSON(res, 200, { ok: true, ...result });
+        } catch (e) {
+            await sendAdminAlert('Scheduled 52W refresh threw an error', `Error: ${e.message}. Check Cloud Run logs for stack trace.`);
+            sendJSON(res, 500, { error: e.message, alerted: true });
+        }
         return;
     }
 
