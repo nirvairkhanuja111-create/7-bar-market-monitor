@@ -75,6 +75,15 @@ if (emailCfg.user && emailCfg.pass) {
 // Admin email — the only email that can access /admin dashboard
 const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || config.adminEmail || '').toLowerCase().trim();
 
+// Shared secret for Cloud Scheduler → cron endpoints. Set as a Secret Manager
+// secret + bound to CRON_SECRET env var on Cloud Run. If empty, cron endpoints
+// return 401 — protects against public abuse of /admin/cron/*.
+const CRON_SECRET = process.env.CRON_SECRET || '';
+
+// Public URL used in email reminder links. Set in Cloud Run env to the canonical
+// service URL (e.g. https://seven-bar-dashboard-266880062356.asia-south1.run.app).
+const PUBLIC_URL = (process.env.PUBLIC_URL || '').replace(/\/$/, '');
+
 // ===== EMAIL WHITELIST (GCS-backed in production, local file in dev) =====
 const WHITELIST_FILE = path.join(__dirname, 'authorized-emails.json');
 const GCS_BUCKET = process.env.GCS_BUCKET || '';
@@ -278,6 +287,64 @@ function maybeRefresh52W() {
 loadInstrumentTokens();
 load52WCache();
 
+// ===== SECTOR CONSTITUENTS (NSE archive CSVs — static, no auth, stable) =====
+// NSE deprecated /api/equity-stockIndices but still publishes daily constituent
+// lists at archives.nseindia.com. We use those for the sector list, then fetch
+// live quotes for each constituent from Kite. 24h in-memory cache (constituents
+// rarely change intraday).
+const SECTOR_CSV_MAP = {
+    'NIFTY IT': 'ind_niftyitlist.csv',
+    'NIFTY BANK': 'ind_niftybanklist.csv',
+    'NIFTY PHARMA': 'ind_niftypharmalist.csv',
+    'NIFTY AUTO': 'ind_niftyautolist.csv',
+    'NIFTY FMCG': 'ind_niftyfmcglist.csv',
+    'NIFTY METAL': 'ind_niftymetallist.csv',
+    'NIFTY REALTY': 'ind_niftyrealtylist.csv',
+    'NIFTY ENERGY': 'ind_niftyenergylist.csv',
+    'NIFTY INFRASTRUCTURE': 'ind_niftyinfralist.csv',
+    'NIFTY PSU BANK': 'ind_niftypsubanklist.csv',
+    'NIFTY MEDIA': 'ind_niftymedialist.csv',
+    'NIFTY FINANCIAL SERVICES': 'ind_niftyfinancelist.csv',
+    'NIFTY HEALTHCARE INDEX': 'ind_niftyhealthcarelist.csv',
+    'NIFTY CONSUMER DURABLES': 'ind_niftyconsumerdurableslist.csv',
+    'NIFTY OIL & GAS': 'ind_niftyoilgaslist.csv',
+    'NIFTY SMALLCAP 250': 'ind_niftysmallcap250list.csv',
+    'NIFTY 500': 'ind_nifty500list.csv',
+};
+
+const sectorConstituentsCache = {}; // { sector: { symbols, time } }
+const SECTOR_CONSTITUENTS_TTL = 24 * 3600 * 1000; // 24h
+
+async function getSectorConstituents(sector) {
+    const cached = sectorConstituentsCache[sector];
+    if (cached && (Date.now() - cached.time) < SECTOR_CONSTITUENTS_TTL) return cached.symbols;
+    const file = SECTOR_CSV_MAP[sector];
+    if (!file) return null;
+    try {
+        const csv = await fetchUrlWithHeaders(
+            `https://archives.nseindia.com/content/indices/${file}`,
+            { 'User-Agent': 'Mozilla/5.0' }
+        );
+        const lines = csv.split('\n');
+        if (lines.length < 2) return null;
+        const header = lines[0].split(',');
+        const symIdx = header.findIndex(h => h.trim() === 'Symbol');
+        if (symIdx < 0) return null;
+        const symbols = [];
+        for (let i = 1; i < lines.length; i++) {
+            const cols = lines[i].split(',');
+            const s = cols[symIdx]?.trim();
+            if (s) symbols.push(s);
+        }
+        sectorConstituentsCache[sector] = { symbols, time: Date.now() };
+        console.log(`  📋 Loaded ${symbols.length} constituents for ${sector} from NSE archive`);
+        return symbols;
+    } catch (e) {
+        console.error(`  ❌ Sector CSV fetch failed for ${sector}: ${e.message}`);
+        return null;
+    }
+}
+
 function generateOtp() { return String(Math.floor(100000 + Math.random() * 900000)); }
 function generateToken() { return crypto.randomBytes(32).toString('hex'); }
 
@@ -303,6 +370,46 @@ async function sendOtpEmail(email, otp) {
             </div>
         `
     });
+}
+
+// ===== KITE AUTH REMINDER (admin-only) =====
+// Hardcoded recipient — never sends to any other address. If you need to change
+// the admin, edit this constant + the Cloud Run ADMIN_EMAIL secret together.
+const AUTH_REMINDER_RECIPIENT = 'nirvairkhanuja111@gmail.com';
+
+async function sendAuthReminder() {
+    if (!emailTransporter) { console.log('  ⚠️  No email transport — skipping auth reminder'); return; }
+    if (kiteClient?.isAuthenticated()) {
+        console.log('  ℹ️  Kite already authenticated today — skipping reminder');
+        return;
+    }
+    const loginUrl = PUBLIC_URL ? `${PUBLIC_URL}/auth/kite` : '/auth/kite';
+    try {
+        await emailTransporter.sendMail({
+            from: emailCfg.from || `"Market Monitor" <${emailCfg.user}>`,
+            to: AUTH_REMINDER_RECIPIENT,
+            subject: 'Market Monitor — Kite re-auth needed before market open',
+            html: `
+                <div style="font-family:Inter,sans-serif;background:#0a0e1a;color:#e0e0e0;padding:40px;border-radius:12px;max-width:520px;margin:0 auto">
+                    <h2 style="color:#00e676;margin:0 0 8px">Market Monitor</h2>
+                    <p style="color:#888;margin:0 0 24px;font-size:13px">Kite Connect session expired at ~06:00 IST today.</p>
+                    <p style="margin:0 0 24px">Without re-auth: Top Stocks, Gainers, Losers, sector drilldowns and Stock Analyser will be empty for users today.</p>
+                    <a href="${loginUrl}" style="display:inline-block;background:#00e676;color:#0a0e1a;padding:14px 28px;border-radius:8px;text-decoration:none;font-weight:700;font-size:15px">Re-auth with Zerodha →</a>
+                    <p style="color:#888;font-size:12px;margin:24px 0 0">Takes ~15 seconds. After login, the 52W cache auto-refreshes in the background.</p>
+                </div>
+            `
+        });
+        console.log(`  ✉️  Auth reminder sent to ${AUTH_REMINDER_RECIPIENT}`);
+    } catch (e) {
+        console.error(`  ❌ Auth reminder email failed: ${e.message}`);
+    }
+}
+
+// Cron endpoint auth — shared secret in X-Cron-Secret header.
+// Cloud Scheduler sets the header; public callers without it get 401.
+function cronAuth(req) {
+    if (!CRON_SECRET) return false;
+    return (req.headers['x-cron-secret'] || '') === CRON_SECRET;
 }
 
 // ===== MIME TYPES =====
@@ -710,6 +817,31 @@ const KITE_SECTOR_MAP = {
     'NSE:NIFTY OIL AND GAS': { name: 'Oil & Gas', fullName: 'Nifty Oil & Gas' },
 };
 
+// Reverse map: Kite symbol → NSE canonical index name.
+// Required because Kite abbreviates names (SMLCAP, INFRA, CONSR DURBL) but
+// downstream consumers (SECTOR_INDEX_MAP, dashboard KPI lookups) match by
+// NSE's full names. Without this, sectors silently drop from heatmap and
+// the SMALLCAP KPI shows '--'.
+const KITE_TO_NSE_INDEX = {
+    'NSE:NIFTY 50': 'NIFTY 50',
+    'NSE:NIFTY BANK': 'NIFTY BANK',
+    'NSE:NIFTY SMLCAP 250': 'NIFTY SMALLCAP 250',
+    'NSE:NIFTY IT': 'NIFTY IT',
+    'NSE:NIFTY PHARMA': 'NIFTY PHARMA',
+    'NSE:NIFTY AUTO': 'NIFTY AUTO',
+    'NSE:NIFTY FMCG': 'NIFTY FMCG',
+    'NSE:NIFTY METAL': 'NIFTY METAL',
+    'NSE:NIFTY REALTY': 'NIFTY REALTY',
+    'NSE:NIFTY ENERGY': 'NIFTY ENERGY',
+    'NSE:NIFTY INFRA': 'NIFTY INFRASTRUCTURE',
+    'NSE:NIFTY PSU BANK': 'NIFTY PSU BANK',
+    'NSE:NIFTY MEDIA': 'NIFTY MEDIA',
+    'NSE:NIFTY FIN SERVICE': 'NIFTY FINANCIAL SERVICES',
+    'NSE:NIFTY HEALTHCARE': 'NIFTY HEALTHCARE INDEX',
+    'NSE:NIFTY CONSR DURBL': 'NIFTY CONSUMER DURABLES',
+    'NSE:NIFTY OIL AND GAS': 'NIFTY OIL & GAS',
+};
+
 let kiteDataCache = { allIndices: null, nifty500: null, time: 0 };
 const KITE_DATA_CACHE_TTL = 30000; // 30s
 
@@ -746,8 +878,8 @@ function kiteToNSEAllIndices(kiteIndices, kiteStocks) {
         const prevClose = q.ohlc?.close || q.last_price;
         const pctChange = prevClose ? ((q.last_price - prevClose) / prevClose * 100) : 0;
 
-        // Map Kite symbol to NSE index name
-        const indexName = sym.replace('NSE:', '');
+        // Map Kite symbol to NSE canonical index name (e.g., SMLCAP → SMALLCAP)
+        const indexName = KITE_TO_NSE_INDEX[sym] || sym.replace('NSE:', '');
         let advances = 0, declines = 0, unchanged = 0;
 
         // Compute advance/decline for NIFTY 500 from stock quotes
@@ -1530,20 +1662,36 @@ const server = http.createServer(async (req, res) => {
                 sendJSON(res, 200, { error: 'No sector provided', stocks: [] });
                 return;
             }
-            const { data, cached } = await getCachedNSE(`sector-${sectorParam}`, `/api/equity-stockIndices?index=${encodeURIComponent(sectorParam)}`);
-            const allStocks = (data.data || []).filter(s => s.symbol && s.symbol !== sectorParam);
-            const sorted = allStocks
-                .map(s => ({
-                    symbol: s.symbol,
-                    companyName: s.meta?.companyName || '',
-                    ltp: parseFloat(s.lastPrice) || 0,
-                    change: parseFloat(s.pChange) || 0,
-                    open: parseFloat(s.open) || 0,
-                    high: parseFloat(s.dayHigh) || 0,
-                    low: parseFloat(s.dayLow) || 0,
-                }))
-                .sort((a, b) => b.change - a.change);
-            sendJSON(res, 200, { source: 'nse', cached, stocks: sorted, timestamp: new Date().toISOString() });
+            // NSE /api/equity-stockIndices is dead (404). Use NSE archive CSVs
+            // for the constituent list, then fetch live quotes from Kite.
+            const constituents = await getSectorConstituents(sectorParam);
+            if (!constituents || constituents.length === 0) {
+                sendJSON(res, 200, { error: 'Sector not in archive', stocks: [], source: 'archive-miss' });
+                return;
+            }
+            if (!kiteClient?.isAuthenticated()) {
+                sendJSON(res, 200, { error: 'Kite not authenticated', stocks: [], source: 'kite-unauthed' });
+                return;
+            }
+            const quotes = await kiteClient.getQuoteBatched(constituents.map(s => `NSE:${s}`));
+            const stocks = [];
+            for (const [sym, q] of Object.entries(quotes || {})) {
+                if (!q || !q.last_price) continue;
+                const symbol = sym.replace('NSE:', '');
+                const prevClose = q.ohlc?.close || q.last_price;
+                const pct = prevClose ? ((q.last_price - prevClose) / prevClose * 100) : 0;
+                stocks.push({
+                    symbol,
+                    companyName: '',
+                    ltp: q.last_price,
+                    change: pct,
+                    open: q.ohlc?.open || 0,
+                    high: q.ohlc?.high || q.last_price,
+                    low: q.ohlc?.low || q.last_price,
+                });
+            }
+            stocks.sort((a, b) => b.change - a.change);
+            sendJSON(res, 200, { source: 'kite+archive', stocks, count: stocks.length, timestamp: new Date().toISOString() });
         } catch (e) {
             console.error('❌ /api/sector-stocks error:', e.message);
             sendJSON(res, 200, { error: e.message, stocks: [], source: 'fallback' });
@@ -1901,6 +2049,30 @@ const server = http.createServer(async (req, res) => {
             if (token) sessionStore.delete(token);
             sendJSON(res, 401, { valid: false });
         }
+        return;
+    }
+
+    // ===== CRON — Cloud Scheduler trigger endpoints (X-Cron-Secret header auth) =====
+    // Refresh 52W cache. Schedule daily at 18:30 UTC = 00:00 IST.
+    // Returns 202 immediately, refresh runs in background.
+    if (pathname === '/admin/cron/refresh-52w') {
+        if (!cronAuth(req)) { sendJSON(res, 401, { error: 'Unauthorized' }); return; }
+        sendJSON(res, 202, { ok: true, scheduled: true });
+        setImmediate(() => {
+            (async () => {
+                if (Object.keys(instrumentTokens).length === 0) await fetchInstrumentTokens();
+                await refresh52WCache();
+            })().catch(e => console.error('  ❌ Cron refresh failed:', e.message));
+        });
+        return;
+    }
+
+    // Send Kite re-auth reminder. Schedule daily at 03:00 UTC = 08:30 IST.
+    // Only fires email if Kite is currently UNauthenticated (idempotent).
+    if (pathname === '/admin/cron/auth-reminder') {
+        if (!cronAuth(req)) { sendJSON(res, 401, { error: 'Unauthorized' }); return; }
+        sendJSON(res, 202, { ok: true, scheduled: true });
+        setImmediate(() => sendAuthReminder().catch(e => console.error('  ❌ Cron reminder failed:', e.message)));
         return;
     }
 
