@@ -75,18 +75,21 @@ class KiteClient {
             .digest('hex');
 
         return new Promise((resolve, reject) => {
-            const postData = JSON.stringify({
+            // Kite /session/token requires application/x-www-form-urlencoded.
+            // Sending JSON causes Kite to parse empty form fields and reject
+            // with "api_key should be minimum 6 characters in length".
+            const postData = new URLSearchParams({
                 api_key: this.apiKey,
                 request_token: requestToken,
                 checksum: checksum,
-            });
+            }).toString();
 
             const options = {
                 hostname: 'api.kite.trade',
                 path: '/session/token',
                 method: 'POST',
                 headers: {
-                    'Content-Type': 'application/json',
+                    'Content-Type': 'application/x-www-form-urlencoded',
                     'Content-Length': Buffer.byteLength(postData),
                     'X-Kite-Version': '3',
                 },

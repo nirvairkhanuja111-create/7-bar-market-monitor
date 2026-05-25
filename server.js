@@ -799,6 +799,9 @@ function isMarketHours() {
     return day >= 1 && day <= 5 && t >= 915 && t <= 1535;
 }
 
+// Kite-primary, NSE-fallback for keys Kite covers (allIndices, nifty500).
+// NSE deprecated /api/equity-stockIndices in May 2026, so Kite is now the
+// reliable source. Sector-XXX keys have no Kite equivalent — NSE-only.
 async function getCachedNSE(key, apiPath) {
     const now = Date.now();
     const ttl = isMarketHours() ? NSE_CACHE_TTL_MARKET : NSE_CACHE_TTL_OFFHOURS;
@@ -807,42 +810,57 @@ async function getCachedNSE(key, apiPath) {
         return { data: nseCache[key].data, cached: true };
     }
 
+    const kiteCovers = key === 'allIndices' || key === 'nifty500';
+
+    const fromKite = async () => {
+        const kiteData = await fetchAllFromKite();
+        if (!kiteData) return null;
+        if (key === 'allIndices') return kiteToNSEAllIndices(kiteData.allIndices, kiteData.nifty500);
+        if (key === 'nifty500') return kiteToNSEStocks(kiteData.nifty500);
+        return null;
+    };
+
+    const persistSymbols = (data) => {
+        if (key !== 'nifty500' || !data?.data) return;
+        const symbols = data.data
+            .filter(s => s.symbol && s.symbol !== 'NIFTY 500')
+            .map(s => s.symbol);
+        if (symbols.length > 400) saveNifty500Symbols(symbols);
+    };
+
+    // PRIMARY: Kite when covered + authed
+    if (kiteCovers && kiteClient?.isAuthenticated()) {
+        try {
+            const data = await fromKite();
+            if (data) {
+                nseCache[key] = { data, timestamp: now };
+                persistSymbols(data);
+                return { data, cached: false };
+            }
+        } catch (kiteError) {
+            console.log(`  ⚠️  Kite primary failed for ${key}: ${kiteError.message}, trying NSE`);
+        }
+    }
+
+    // FALLBACK (or primary if Kite unavailable): NSE
     try {
         const data = await fetchNSE(apiPath);
         nseCache[key] = { data, timestamp: now };
-
-        // Auto-save Nifty 500 symbol list when NSE works
-        if (key === 'nifty500' && data.data) {
-            const symbols = data.data
-                .filter(s => s.symbol && s.symbol !== 'NIFTY 500')
-                .map(s => s.symbol);
-            if (symbols.length > 400) saveNifty500Symbols(symbols);
-        }
-
+        persistSymbols(data);
         return { data, cached: false };
     } catch (nseError) {
-        // NSE failed — try Kite fallback
-        if (kiteClient?.isAuthenticated()) {
-            console.log(`  🔄 NSE failed for ${key}, trying Kite fallback...`);
+        // Last chance: if Kite covers but wasn't authed at entry, retry now
+        if (kiteCovers && kiteClient?.isAuthenticated()) {
             try {
-                const kiteData = await fetchAllFromKite();
-                if (kiteData) {
-                    let data;
-                    if (key === 'allIndices') {
-                        data = kiteToNSEAllIndices(kiteData.allIndices, kiteData.nifty500);
-                    } else if (key === 'nifty500' || apiPath.includes('equity-stockIndices')) {
-                        data = kiteToNSEStocks(kiteData.nifty500);
-                    } else {
-                        throw nseError; // No Kite equivalent for this endpoint
-                    }
-                    if (data) {
-                        nseCache[key] = { data, timestamp: now };
-                        console.log(`  ✅ Kite fallback successful for ${key}`);
-                        return { data, cached: false };
-                    }
+                const data = await fromKite();
+                if (data) {
+                    nseCache[key] = { data, timestamp: now };
+                    persistSymbols(data);
+                    console.log(`  ✅ Kite recovered ${key} after NSE failure`);
+                    return { data, cached: false };
                 }
-            } catch (kiteError) {
-                console.error(`  ❌ Kite fallback also failed for ${key}:`, kiteError.message);
+            } catch (e) {
+                console.error(`  ❌ Kite recovery also failed for ${key}: ${e.message}`);
             }
         }
         throw nseError;
