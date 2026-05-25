@@ -179,6 +179,52 @@ class KiteClient {
         return this.apiCall(`/instruments/historical/${instrumentToken}/${interval}?from=${from}&to=${to}`);
     }
 
+    // Fetch full NSE EQ instrument list (~5MB CSV) and return
+    // { tradingsymbol: instrument_token } map for NSE equity segment only.
+    async getNSEEQInstruments() {
+        if (!this.accessToken) return null;
+        return new Promise((resolve, reject) => {
+            const options = {
+                hostname: 'api.kite.trade',
+                path: '/instruments',
+                method: 'GET',
+                headers: {
+                    'X-Kite-Version': '3',
+                    'Authorization': `token ${this.apiKey}:${this.accessToken}`,
+                },
+            };
+            const req = https.get(options, (res) => {
+                if (res.statusCode !== 200) {
+                    return reject(new Error(`Instruments HTTP ${res.statusCode}`));
+                }
+                let data = '';
+                res.on('data', chunk => data += chunk);
+                res.on('end', () => {
+                    try {
+                        const lines = data.split('\n');
+                        if (lines.length < 2) return resolve({});
+                        const header = lines[0].split(',');
+                        const tokenIdx = header.indexOf('instrument_token');
+                        const symIdx = header.indexOf('tradingsymbol');
+                        const segIdx = header.indexOf('segment');
+                        const typeIdx = header.indexOf('instrument_type');
+                        const map = {};
+                        for (let i = 1; i < lines.length; i++) {
+                            const cols = lines[i].split(',');
+                            if (cols.length < header.length) continue;
+                            if (cols[segIdx] === 'NSE' && cols[typeIdx] === 'EQ') {
+                                map[cols[symIdx]] = parseInt(cols[tokenIdx], 10);
+                            }
+                        }
+                        resolve(map);
+                    } catch (e) { reject(e); }
+                });
+            });
+            req.on('error', reject);
+            req.setTimeout(30000, () => { req.destroy(); reject(new Error('Instruments timeout')); });
+        });
+    }
+
     // Bulk quote in batches (Kite may limit per-request count)
     async getQuoteBatched(symbols, batchSize = 500) {
         if (!this.accessToken || !symbols.length) return null;

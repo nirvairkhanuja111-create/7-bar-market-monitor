@@ -133,6 +133,151 @@ let whitelistReady = loadWhitelist().then(() => {
     if (ADMIN_EMAIL) emailWhitelist.add(ADMIN_EMAIL);
 });
 
+// ===== 52-WEEK HIGH/LOW CACHE (Kite Historical, daily refresh, GCS-backed) =====
+// Kite /quote does not return 52W H/L. We compute it from 1y of daily candles
+// via /instruments/historical, cache to GCS so it survives container restarts,
+// and refresh in background once per day (IST). During refresh, requests are
+// served from the previous day's cache so users never see empty data.
+const GCS_52W_KEY = '52w-cache.json';
+const INSTRUMENTS_FILE = path.join(__dirname, '.kite-instruments.json');
+let gcs52WFile = null;
+if (GCS_BUCKET) {
+    try {
+        const _storage = new Storage();
+        gcs52WFile = _storage.bucket(GCS_BUCKET).file(GCS_52W_KEY);
+        console.log(`  ☁️  GCS 52W cache: gs://${GCS_BUCKET}/${GCS_52W_KEY}`);
+    } catch (e) { /* GCS already failed once for whitelist — silent here */ }
+}
+
+let weekHighLow = {};           // { SYMBOL: { high, low } }
+let weekHighLowAsOf = null;     // 'YYYY-MM-DD' (IST) when cache was built
+let weekHighLowRefreshing = false;
+let instrumentTokens = {};      // { SYMBOL: instrument_token }
+
+function todayIST() {
+    return new Date(Date.now() + 5.5 * 3600 * 1000).toISOString().slice(0, 10);
+}
+
+async function load52WCache() {
+    if (!gcs52WFile) return;
+    try {
+        const [contents] = await gcs52WFile.download();
+        const parsed = JSON.parse(contents.toString());
+        weekHighLow = parsed.data || {};
+        weekHighLowAsOf = parsed.asOf || null;
+        console.log(`  ✅ Loaded 52W cache from GCS (asOf=${weekHighLowAsOf}, ${Object.keys(weekHighLow).length} symbols)`);
+    } catch (e) {
+        console.log('  ℹ️  No 52W cache in GCS yet (first run)');
+    }
+}
+
+async function save52WCache() {
+    if (!gcs52WFile) return;
+    try {
+        await gcs52WFile.save(
+            JSON.stringify({ asOf: weekHighLowAsOf, data: weekHighLow }),
+            { contentType: 'application/json', resumable: false }
+        );
+    } catch (e) {
+        console.error('  ❌ 52W cache save failed:', e.message);
+    }
+}
+
+function loadInstrumentTokens() {
+    try {
+        if (fs.existsSync(INSTRUMENTS_FILE)) {
+            instrumentTokens = JSON.parse(fs.readFileSync(INSTRUMENTS_FILE, 'utf8'));
+            console.log(`  📋 Loaded ${Object.keys(instrumentTokens).length} Kite instrument tokens from cache`);
+        }
+    } catch (e) { /* missing file is fine */ }
+}
+
+async function fetchInstrumentTokens() {
+    if (!kiteClient?.isAuthenticated()) return;
+    try {
+        const map = await kiteClient.getNSEEQInstruments();
+        if (map && Object.keys(map).length > 0) {
+            instrumentTokens = map;
+            try { fs.writeFileSync(INSTRUMENTS_FILE, JSON.stringify(map)); } catch (e) {}
+            console.log(`  💾 Cached ${Object.keys(map).length} Kite NSE EQ instrument tokens`);
+        }
+    } catch (e) {
+        console.error('  ❌ Kite instruments fetch failed:', e.message);
+    }
+}
+
+async function refresh52WCache() {
+    if (weekHighLowRefreshing) return;
+    if (!kiteClient?.isAuthenticated()) return;
+    if (nifty500SymbolList.length === 0) return;
+
+    weekHighLowRefreshing = true;
+    const startTime = Date.now();
+    console.log(`  🔄 Refreshing 52W cache for ${nifty500SymbolList.length} symbols (background, ~3 min)...`);
+
+    try {
+        if (Object.keys(instrumentTokens).length === 0) {
+            await fetchInstrumentTokens();
+        }
+
+        const today = new Date();
+        const from = new Date(today.getTime() - 380 * 86400 * 1000);
+        const toStr = today.toISOString().slice(0, 10);
+        const fromStr = from.toISOString().slice(0, 10);
+
+        const newCache = {};
+        let success = 0, missing = 0;
+
+        // Kite historical rate limit: 3 req/sec → 350ms gap between calls
+        for (const symbol of nifty500SymbolList) {
+            const token = instrumentTokens[symbol];
+            if (!token) { missing++; continue; }
+
+            try {
+                const data = await kiteClient.getHistoricalData(token, 'day', fromStr, toStr);
+                if (data?.candles?.length) {
+                    let high = 0, low = Infinity;
+                    for (const c of data.candles) {
+                        // candle = [timestamp, open, high, low, close, volume]
+                        if (c[2] > high) high = c[2];
+                        if (c[3] < low) low = c[3];
+                    }
+                    if (high > 0 && low < Infinity) {
+                        newCache[symbol] = { high, low };
+                        success++;
+                    }
+                }
+            } catch (e) { /* skip failures, don't poison whole refresh */ }
+
+            await new Promise(r => setTimeout(r, 350));
+        }
+
+        if (success > 0) {
+            weekHighLow = newCache;
+            weekHighLowAsOf = todayIST();
+            await save52WCache();
+            const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+            console.log(`  ✅ 52W cache refreshed: ${success} symbols in ${elapsed}s (${missing} missing tokens)`);
+        } else {
+            console.error('  ❌ 52W refresh produced no data — keeping previous cache');
+        }
+    } finally {
+        weekHighLowRefreshing = false;
+    }
+}
+
+// Fire-and-forget: trigger refresh if cache is stale and not already refreshing.
+// Cache is considered fresh if asOf == today's IST date.
+function maybeRefresh52W() {
+    if (weekHighLowAsOf === todayIST()) return;
+    if (weekHighLowRefreshing) return;
+    refresh52WCache(); // no await — runs in background
+}
+
+// Load cache + instrument tokens at startup (parallel with whitelist load)
+loadInstrumentTokens();
+load52WCache();
+
 function generateOtp() { return String(Math.floor(100000 + Math.random() * 900000)); }
 function generateToken() { return crypto.randomBytes(32).toString('hex'); }
 
@@ -658,6 +803,7 @@ function kiteToNSEStocks(kiteStocks) {
         const symbol = sym.replace('NSE:', '');
         const prevClose = q.ohlc?.close || q.last_price;
         const pctChange = prevClose ? ((q.last_price - prevClose) / prevClose * 100) : 0;
+        const wHL = weekHighLow[symbol];
         stocks.push({
             symbol,
             lastPrice: String(q.last_price),
@@ -666,8 +812,10 @@ function kiteToNSEStocks(kiteStocks) {
             dayHigh: String(q.ohlc?.high || q.last_price),
             dayLow: String(q.ohlc?.low || q.last_price),
             previousClose: String(prevClose),
-            yearHigh: '0', // Not available from Kite quote
-            yearLow: '0',
+            // 52W H/L injected from daily-refreshed cache (server.js 52W layer).
+            // Kite /quote does not return these; cache is built from /historical.
+            yearHigh: String(wHL?.high || 0),
+            yearLow: String(wHL?.low || 0),
             totalTradedVolume: String(q.volume || 0),
             totalTradedValue: '0',
             meta: { companyName: '' },
@@ -835,6 +983,9 @@ async function getCachedNSE(key, apiPath) {
             if (data) {
                 nseCache[key] = { data, timestamp: now };
                 persistSymbols(data);
+                // Trigger 52W refresh check whenever nifty500 is served from Kite.
+                // Fire-and-forget — only runs if cache is stale (once/day).
+                if (key === 'nifty500') maybeRefresh52W();
                 return { data, cached: false };
             }
         } catch (kiteError) {
@@ -1988,7 +2139,12 @@ const server = http.createServer(async (req, res) => {
         try {
             const tokenData = await kiteClient.exchangeToken(requestToken);
             console.log('  ✅ Kite login successful!');
-            // Redirect back to dashboard with success flag
+            // Kick off cold-start jobs in background — user gets dashboard immediately.
+            // Instrument tokens (one-time, ~5MB CSV) and 52W cache (~3 min full refresh).
+            (async () => {
+                if (Object.keys(instrumentTokens).length === 0) await fetchInstrumentTokens();
+                maybeRefresh52W();
+            })().catch(e => console.error('  ❌ Post-OAuth init failed:', e.message));
             res.writeHead(302, { Location: '/?kite=success' });
             res.end();
         } catch (e) {

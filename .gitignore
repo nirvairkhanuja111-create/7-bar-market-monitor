@@ -5,3 +5,4 @@ server.log
 pre_usa_reconstructed/
 config.json
 .kite-token.json
+.kite-instruments.json
