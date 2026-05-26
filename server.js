@@ -305,6 +305,52 @@ function maybeRefresh52W() {
     refresh52WCache(); // no await — runs in background
 }
 
+// On-demand 52W fetch for stocks NOT covered by the daily cache (e.g. PRECWIRE,
+// any NSE-listed stock outside Nifty Total Market 750). Hits Kite Historical
+// for a single symbol — ~1-2 sec. Result merges into the same in-memory cache,
+// so subsequent same-day requests are instant. NOT saved to GCS to avoid races
+// with the daily refresh (GCS holds the canonical cohort).
+const onDemand52WInFlight = {}; // symbol → Promise, dedupes concurrent requests
+async function get52W(symbol) {
+    if (!symbol) return null;
+    if (weekHighLow[symbol]) return weekHighLow[symbol];
+    if (!kiteClient?.isAuthenticated()) return null;
+    const token = instrumentTokens[symbol];
+    if (!token) return null;
+    if (onDemand52WInFlight[symbol]) return onDemand52WInFlight[symbol];
+
+    onDemand52WInFlight[symbol] = (async () => {
+        try {
+            const today = new Date();
+            const from = new Date(today.getTime() - 380 * 86400 * 1000);
+            const data = await kiteClient.getHistoricalData(
+                token, 'day',
+                from.toISOString().slice(0, 10),
+                today.toISOString().slice(0, 10)
+            );
+            if (!data?.candles?.length) return null;
+            let high = 0, low = Infinity;
+            for (const c of data.candles) {
+                // candle = [timestamp, open, high, low, close, volume]
+                if (c[2] > high) high = c[2];
+                if (c[3] < low) low = c[3];
+            }
+            if (high > 0 && low < Infinity) {
+                weekHighLow[symbol] = { high, low };
+                console.log(`  📊 On-demand 52W for ${symbol}: high=${high} low=${low}`);
+                return weekHighLow[symbol];
+            }
+            return null;
+        } catch (e) {
+            console.error(`  ❌ On-demand 52W for ${symbol} failed: ${e.message}`);
+            return null;
+        } finally {
+            delete onDemand52WInFlight[symbol];
+        }
+    })();
+    return onDemand52WInFlight[symbol];
+}
+
 // Load cache + instrument tokens at startup (parallel with whitelist load)
 loadInstrumentTokens();
 load52WCache();
@@ -818,9 +864,9 @@ function loadNifty500Symbols() {
     try {
         if (fs.existsSync(NIFTY500_SYMBOLS_FILE)) {
             nifty500SymbolList = JSON.parse(fs.readFileSync(NIFTY500_SYMBOLS_FILE, 'utf8'));
-            console.log(`  📋 Loaded ${nifty500SymbolList.length} Nifty 500 symbols from cache`);
+            console.log(`  📋 Loaded ${nifty500SymbolList.length} broad-market symbols from cache`);
         }
-    } catch (e) { console.log('  ⚠️  No cached Nifty 500 symbol list'); }
+    } catch (e) { console.log('  ⚠️  No cached broad-market symbol list'); }
 }
 
 function saveNifty500Symbols(symbols) {
@@ -828,17 +874,46 @@ function saveNifty500Symbols(symbols) {
     nifty500SymbolList = symbols;
     try {
         fs.writeFileSync(NIFTY500_SYMBOLS_FILE, JSON.stringify(symbols));
-        console.log(`  💾 Saved ${symbols.length} Nifty 500 symbols`);
+        console.log(`  💾 Saved ${symbols.length} broad-market symbols`);
     } catch (e) { /* might fail on read-only filesystem */ }
 }
 
+// Pull the full broad-market list (Nifty Total Market = 750 stocks, ~97% of
+// NSE market cap) from NSE archives — static CSV, no auth, separate infra from
+// the dead /api/equity-stockIndices route. Replaces the previous Nifty 500
+// universe so analyser + 52W cache cover smaller indexed stocks too.
+async function refreshBroadMarketSymbols() {
+    try {
+        const csv = await fetchUrlWithHeaders(
+            'https://archives.nseindia.com/content/indices/ind_niftytotalmarket_list.csv',
+            { 'User-Agent': 'Mozilla/5.0' }
+        );
+        const lines = csv.split('\n');
+        if (lines.length < 2) return;
+        const header = lines[0].split(',');
+        const symIdx = header.findIndex(h => h.trim() === 'Symbol');
+        if (symIdx < 0) return;
+        const symbols = [];
+        for (let i = 1; i < lines.length; i++) {
+            const cols = lines[i].split(',');
+            const s = cols[symIdx]?.trim();
+            if (s) symbols.push(s);
+        }
+        if (symbols.length > 400) saveNifty500Symbols(symbols);
+    } catch (e) {
+        console.error(`  ❌ Broad-market refresh failed: ${e.message}`);
+    }
+}
+
 loadNifty500Symbols();
+// Refresh asynchronously — server starts immediately, list expands when ready
+refreshBroadMarketSymbols().catch(() => {});
 
 // ===== KITE DATA FALLBACK LAYER =====
 // When NSE API fails (geo-blocked overseas), use Kite Connect as data source
 
 const KITE_INDEX_SYMBOLS = [
-    'NSE:NIFTY 50', 'NSE:NIFTY BANK', 'NSE:NIFTY SMLCAP 250',
+    'NSE:NIFTY 50', 'NSE:NIFTY BANK', 'NSE:NIFTY SMLCAP 100',
     'NSE:NIFTY IT', 'NSE:NIFTY PHARMA', 'NSE:NIFTY AUTO',
     'NSE:NIFTY FMCG', 'NSE:NIFTY METAL', 'NSE:NIFTY REALTY',
     'NSE:NIFTY ENERGY', 'NSE:NIFTY INFRA', 'NSE:NIFTY PSU BANK',
@@ -872,7 +947,7 @@ const KITE_SECTOR_MAP = {
 const KITE_TO_NSE_INDEX = {
     'NSE:NIFTY 50': 'NIFTY 50',
     'NSE:NIFTY BANK': 'NIFTY BANK',
-    'NSE:NIFTY SMLCAP 250': 'NIFTY SMALLCAP 250',
+    'NSE:NIFTY SMLCAP 100': 'NIFTY SMALLCAP 100',
     'NSE:NIFTY IT': 'NIFTY IT',
     'NSE:NIFTY PHARMA': 'NIFTY PHARMA',
     'NSE:NIFTY AUTO': 'NIFTY AUTO',
@@ -1533,7 +1608,7 @@ const server = http.createServer(async (req, res) => {
                     for (const idx of allIdx) {
                         if (idx.index === 'NIFTY 50') indices.nifty = { name: 'NIFTY 50', last: parseFloat(idx.last), change: parseFloat(idx.percentChange), pointChange: parseFloat(idx.previousClose) - parseFloat(idx.last) ? parseFloat((parseFloat(idx.last) - parseFloat(idx.previousClose)).toFixed(2)) : 0 };
                         else if (idx.index === 'NIFTY BANK') indices.banknifty = { name: 'NIFTY BANK', last: parseFloat(idx.last), change: parseFloat(idx.percentChange), pointChange: parseFloat((parseFloat(idx.last) - parseFloat(idx.previousClose)).toFixed(2)) };
-                        else if (idx.index === 'NIFTY SMALLCAP 250') indices.smallcap = { name: 'NIFTY SMALLCAP 250', last: parseFloat(idx.last), change: parseFloat(idx.percentChange), pointChange: parseFloat((parseFloat(idx.last) - parseFloat(idx.previousClose)).toFixed(2)) };
+                        else if (idx.index === 'NIFTY SMALLCAP 100') indices.smallcap = { name: 'NIFTY SMALLCAP 100', last: parseFloat(idx.last), change: parseFloat(idx.percentChange), pointChange: parseFloat((parseFloat(idx.last) - parseFloat(idx.previousClose)).toFixed(2)) };
                     }
                     try {
                         const [goldData, usdinrData] = await Promise.all([fetchGoldPrice(), fetchUSDINRRate()]);
@@ -1629,17 +1704,23 @@ const server = http.createServer(async (req, res) => {
 
             const makeEntry = (raw) => {
                 if (!raw) return null;
-                // NSE returns change as string like "-829.29" (point change) and percentChange as "-1.08"
+                // NSE returns 'variation' / 'change' as point change. Kite-shaped
+                // data has neither — only 'previousClose'. Fall back to last-prev
+                // so /api/index-quotes stays consistent with /api/dashboard.
                 const last = parseFloat(raw.last) || parseFloat(raw.lastPrice) || 0;
                 const pctChange = parseFloat(raw.percentChange) || parseFloat(raw.pChange) || 0;
-                const ptChange = parseFloat(raw.variation) || parseFloat(raw.change) || 0;
+                let ptChange = parseFloat(raw.variation) || parseFloat(raw.change) || 0;
+                if (ptChange === 0 && raw.previousClose) {
+                    const prev = parseFloat(raw.previousClose);
+                    if (prev > 0) ptChange = parseFloat((last - prev).toFixed(2));
+                }
                 return { name: raw.index, last, change: pctChange, pointChange: ptChange };
             };
 
             const indices = {};
             const niftyRaw = findIdx(['NIFTY 50']);
             const bankRaw = findIdx(['NIFTY BANK']);
-            const smallRaw = findIdx(['NIFTY SMALLCAP 250', 'SMALLCAP 250', 'SMALLCAP 100']);
+            const smallRaw = findIdx(['NIFTY SMALLCAP 100', 'SMALLCAP 100']);
 
             if (niftyRaw) indices.nifty = makeEntry(niftyRaw);
             if (bankRaw) indices.banknifty = makeEntry(bankRaw);
@@ -1815,6 +1896,17 @@ const server = http.createServer(async (req, res) => {
             if (!stock) {
                 sendJSON(res, 200, { error: `${symbol} not found on NSE — check the ticker (e.g. TRENT, not TRENT.NS)`, symbol });
                 return;
+            }
+
+            // Always overlay 52W H/L from the unified cache (with on-demand
+            // Kite Historical fetch if missing). This makes 52W independent of
+            // how `stock` was sourced — covers stocks outside Nifty Total Market
+            // (e.g. PRECWIRE) and corrects any stale '0' values from the Kite
+            // quote transformer.
+            const ohl = await get52W(symbol);
+            if (ohl) {
+                stock.yearHigh = String(ohl.high);
+                stock.yearLow = String(ohl.low);
             }
 
             // Get Nifty 500 index change for relative strength comparison

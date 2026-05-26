@@ -445,7 +445,10 @@ function renderIndexCard(cardId, data) {
         valEl.textContent = last.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     }
 
-    chgEl.textContent = `${sign}${Math.abs(pointChange).toFixed(2)} (${sign}${change.toFixed(2)}%)`;
+    // Preserve sign on point change (Math.abs was stripping minus for losses).
+    // pointChange.toFixed(2) keeps the minus; prepend '+' only for non-negative.
+    const pointStr = (pointChange >= 0 ? '+' : '') + pointChange.toFixed(2);
+    chgEl.textContent = `${pointStr} (${sign}${change.toFixed(2)}%)`;
     chgEl.className = `kpi-index-change ${change >= 0 ? 'positive' : 'negative'}`;
     card.className = `kpi-index-card ${change >= 0 ? 'up' : 'down'}`;
 }
