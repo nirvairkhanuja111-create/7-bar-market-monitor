@@ -168,12 +168,19 @@ if (kiteClient && gcsKiteTokenFile) {
     kiteClient.remoteSave = async (json) => {
         await gcsKiteTokenFile.save(json, { contentType: 'application/json', resumable: false });
     };
-    // Hydrate at startup — fire-and-forget, no await (server can start without it)
+    // Hydrate at startup — fire-and-forget, no await (server can start without it).
+    // On success, also kick off instrument-token fetch + 52W refresh so that
+    // GCS-hydrated containers reach full operational state without waiting for
+    // an OAuth flow that won't happen today.
     kiteClient.loadTokenRemote(async () => {
         try {
             const [contents] = await gcsKiteTokenFile.download();
             return contents.toString();
         } catch (e) { return null; }
+    }).then(async (loaded) => {
+        if (!loaded) return;
+        if (Object.keys(instrumentTokens).length === 0) await fetchInstrumentTokens();
+        maybeRefresh52W();
     }).catch(() => {});
 }
 
@@ -315,6 +322,9 @@ async function get52W(symbol) {
     if (!symbol) return null;
     if (weekHighLow[symbol]) return weekHighLow[symbol];
     if (!kiteClient?.isAuthenticated()) return null;
+    // Lazy-load instrument tokens. Needed when Kite token auto-hydrates from
+    // GCS (no OAuth flow → fetchInstrumentTokens never triggered post-deploy).
+    if (Object.keys(instrumentTokens).length === 0) await fetchInstrumentTokens();
     const token = instrumentTokens[symbol];
     if (!token) return null;
     if (onDemand52WInFlight[symbol]) return onDemand52WInFlight[symbol];
